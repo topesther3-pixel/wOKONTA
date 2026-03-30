@@ -1,0 +1,8 @@
+{
+  "name": "WO Akontaa",
+  "description": "A voice-first financial tracking app for Ghanaian market women to track sales, expenses, and debts with AI guidance.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

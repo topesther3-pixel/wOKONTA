@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Records of money in (sales) and money out (expenses).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID of the owner." },
+        "type": { "type": "string", "enum": ["income", "expense"], "description": "Type of transaction." },
+        "category": { "type": "string", "enum": ["business", "personal"], "description": "Category for expenses." },
+        "amount": { "type": "number", "description": "Amount in GHS." },
+        "item": { "type": "string", "description": "Optional item name." },
+        "quantity": { "type": "number", "description": "Optional quantity." },
+        "unit": { "type": "string", "description": "Optional unit (olonka, crate, etc)." },
+        "imageUrl": { "type": "string", "description": "Optional photo of the item/receipt." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of the transaction." }
+      },
+      "required": ["uid", "type", "amount", "createdAt"]
+    },
+    "Debt": {
+      "title": "Debt",
+      "description": "Records of who owes the user money (Pay Small Small).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID of the owner." },
+        "name": { "type": "string", "description": "Name of the debtor." },
+        "amount": { "type": "number", "description": "Total amount owed in GHS." },
+        "paidAmount": { "type": "number", "description": "Amount paid so far." },
+        "status": { "type": "string", "enum": ["unpaid", "partial", "paid"], "description": "Status of the debt." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when debt was recorded." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp." }
+      },
+      "required": ["uid", "name", "amount", "status", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User settings and metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID." },
+        "displayName": { "type": "string", "description": "User's name." },
+        "phoneNumber": { "type": "string", "description": "User's phone number." },
+        "language": { "type": "string", "description": "Preferred language (Twi, Ga, etc)." },
+        "pinHash": { "type": "string", "description": "Hashed 4-digit PIN." },
+        "isSetupComplete": { "type": "boolean", "description": "Whether user has finished PIN setup." }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "User transactions."
+    },
+    "/debts/{debtId}": {
+      "schema": "Debt",
+      "description": "User debt records."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile data."
+    }
+  }
+}

@@ -1,0 +1,122 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: transactions
+// Document ID: auto-generated
+// Fields:
+//   - uid: string (required) - User ID of the owner
+//   - type: string (required, enum: ['income', 'expense']) - Type of transaction
+//   - category: string (optional, enum: ['business', 'personal']) - Category for expenses
+//   - amount: number (required, positive) - Amount in GHS
+//   - item: string (optional) - Item name
+//   - quantity: number (optional) - Quantity
+//   - unit: string (optional) - Unit (olonka, crate, etc)
+//   - imageUrl: string (optional) - Photo URL
+//   - createdAt: timestamp (required) - Creation time
+//
+// Collection: debts
+// Document ID: auto-generated
+// Fields:
+//   - uid: string (required) - User ID of the owner
+//   - name: string (required) - Debtor name
+//   - amount: number (required, positive) - Total amount
+//   - paidAmount: number (required) - Amount paid
+//   - status: string (required, enum: ['unpaid', 'partial', 'paid']) - Status
+//   - createdAt: timestamp (required) - Creation time
+//   - updatedAt: timestamp (required) - Update time
+//
+// Collection: users
+// Document ID: userId
+// Fields:
+//   - uid: string (required) - User ID
+//   - displayName: string (optional) - Name
+//   - phoneNumber: string (optional) - Phone
+//   - language: string (optional) - Preferred language
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidTransaction(data) {
+      return data.uid == request.auth.uid &&
+             data.type in ['income', 'expense'] &&
+             data.amount is number && data.amount > 0 &&
+             data.createdAt is timestamp &&
+             (!('category' in data) || data.category in ['business', 'personal']);
+    }
+
+    function isValidDebt(data) {
+      return data.uid == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.amount is number && data.amount > 0 &&
+             data.paidAmount is number && data.paidAmount >= 0 &&
+             data.status in ['unpaid', 'partial', 'paid'] &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidUser(data) {
+      return data.uid == request.auth.uid &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() < 20)) &&
+             (!('language' in data) || (data.language is string && data.language.size() < 20)) &&
+             (!('pinHash' in data) || (data.pinHash is string && data.pinHash.size() == 64)) &&
+             (!('isSetupComplete' in data) || data.isSetupComplete is bool);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "estherasab@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /transactions/{transactionId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      allow update: if isDocOwner() && isValidTransaction(request.resource.data) && 
+                      request.resource.data.uid == resource.data.uid;
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /debts/{debtId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidDebt(request.resource.data);
+      allow update: if isDocOwner() && isValidDebt(request.resource.data) && 
+                      request.resource.data.uid == resource.data.uid;
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+    }
+  }
+}
