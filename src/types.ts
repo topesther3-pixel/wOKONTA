@@ -30,6 +30,7 @@ export interface UserProfile {
   id: string;
   phone: string;
   pin: string;
+  role?: 'admin' | 'user';
   is_setup_complete?: boolean;
   created_at?: string;
 }

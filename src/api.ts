@@ -3,40 +3,44 @@ import { Transaction, Debt, UserProfile } from './types';
 
 /**
  * LOGIN FUNCTION
- * Authenticates user by phone and pin, or creates a new user if not found.
+ * Simple admin and user login for demo purposes.
  */
-export async function login(phone: string, pin: string) {
+export async function login(phone: string, pin: string): Promise<{ success: boolean; user?: UserProfile; message?: string }> {
   console.log(`Attempting login for: ${phone}`);
   
-  const { data: user, error: fetchError } = await supabase
-    .from('users')
-    .select('*')
-    .eq('phone', phone)
-    .single();
+  // ADMIN LOGIN
+  if (phone === "0240000000" && pin === "1234") {
+    const adminUser: UserProfile = {
+      id: 'admin-id',
+      phone: phone,
+      pin: pin,
+      role: "admin"
+    };
 
-  if (user) {
-    if (user.pin === pin) {
-      localStorage.setItem('user', JSON.stringify(user));
-      return { success: true, user: user as UserProfile };
-    } else {
-      return { success: false, message: "Wrong PIN" };
-    }
-  } else {
-    // Create new user automatically
-    const { data: newUser, error: insertError } = await supabase
-      .from('users')
-      .insert([{ phone, pin }])
-      .select()
-      .single();
-
-    if (insertError) {
-      console.error("Login Error (Create User):", insertError);
-      return { success: false, message: "Could not create account" };
-    }
-
-    localStorage.setItem('user', JSON.stringify(newUser));
-    return { success: true, user: newUser as UserProfile };
+    localStorage.setItem("user", JSON.stringify(adminUser));
+    return { success: true, user: adminUser };
   }
+
+  // NORMAL USER (Instant login for demo)
+  // We can still try to find them in Supabase, but for "Instant Login" as requested:
+  const normalUser: UserProfile = {
+    id: `user-${phone}`,
+    phone: phone,
+    pin: pin,
+    role: "user"
+  };
+
+  localStorage.setItem("user", JSON.stringify(normalUser));
+  return { success: true, user: normalUser };
+}
+
+/**
+ * CHECK ADMIN
+ * Helper to check if current user is admin.
+ */
+export function isAdmin() {
+  const user = getCurrentUser();
+  return user?.role === "admin";
 }
 
 /**

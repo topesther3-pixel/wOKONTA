@@ -15,7 +15,8 @@ import {
   getDebts as apiGetDebts, 
   getProfit,
   deleteTransaction as apiDeleteTransaction,
-  updateDebt as apiUpdateDebt
+  updateDebt as apiUpdateDebt,
+  isAdmin
 } from './api';
 import { Transaction, Debt, UserProfile, ParsedTransaction } from './types';
 import { parseTransaction, getAkosuaAdvice, cleanSpeechInput, speakText } from './services/geminiService';
@@ -52,6 +53,7 @@ export default function App() {
   const [isEditing, setIsEditing] = useState(false);
   const [showAkosua, setShowAkosua] = useState(false);
   const [akosuaMessage, setAkosuaMessage] = useState('');
+  const [akosuaInput, setAkosuaInput] = useState('');
   const [isAkosuaLoading, setIsAkosuaLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'debts' | 'history'>('home');
   const [showAddModal, setShowAddModal] = useState<'income' | 'expense' | 'debt' | null>(null);
@@ -68,6 +70,12 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [allTransactions, setAllTransactions] = useState<any[]>([]);
   const [allDebts, setAllDebts] = useState<any[]>([]);
+  const [adminAnalytics, setAdminAnalytics] = useState({
+    totalUsers: 0,
+    totalIncome: 0,
+    totalExpense: 0,
+    totalDebt: 0
+  });
   const [akosuaTapCount, setAkosuaTapCount] = useState(0);
   const [isAdminLogin, setIsAdminLogin] = useState(false);
   const [adminPin, setAdminPin] = useState('');
@@ -90,6 +98,7 @@ export default function App() {
     const currentUser = getCurrentUser();
     if (currentUser) {
       setUser(currentUser);
+      if (isAdmin()) setIsAdminMode(true);
     }
     setLoading(false);
   }, []);
@@ -193,6 +202,7 @@ export default function App() {
       const result = await apiLogin(phoneNumber, pin);
       if (result.success && result.user) {
         setUser(result.user);
+        if (isAdmin()) setIsAdminMode(true);
       } else {
         setAuthError(result.message || "Login failed");
         setPin('');
@@ -272,23 +282,48 @@ export default function App() {
 
   const fetchAdminData = async () => {
     try {
+      // Fetch Users
       const { data: users } = await supabase.from('users').select('*');
-      const txs = await getTransactions();
-      const debts = await apiGetDebts();
+      
+      // Fetch ALL Transactions (Admin)
+      const { data: txs } = await supabase.from('transactions').select('*').order('created_at', { ascending: false });
+      
+      // Fetch ALL Debts (Admin)
+      const { data: debts } = await supabase.from('debts').select('*').order('created_at', { ascending: false });
       
       setAllUsers(users || []);
       setAllTransactions(txs || []);
       setAllDebts(debts || []);
+
+      // Calculate Analytics
+      let income = 0;
+      let expense = 0;
+      txs?.forEach(t => {
+        if (t.type === 'income') income += Number(t.amount);
+        if (t.type === 'expense') expense += Number(t.amount);
+      });
+
+      const totalDebt = debts?.reduce((sum, d) => sum + Number(d.amount), 0) || 0;
+
+      setAdminAnalytics({
+        totalUsers: users?.length || 0,
+        totalIncome: income,
+        totalExpense: expense,
+        totalDebt: totalDebt
+      });
     } catch (err) {
-      console.error("Admin Fetch Error (General):", err);
+      console.error("Admin Fetch Error:", err);
     }
   };
 
-  const handleAdminLogin = () => {
-    if (phoneNumber === '0240000000' && adminPin === '1234') {
+  const handleAdminLogin = async () => {
+    // Admin credentials as requested
+    const result = await apiLogin(phoneNumber, adminPin);
+    if (result.success && result.user && result.user.role === 'admin') {
       setIsAdminMode(true);
       setShowAdminDashboard(true);
       setIsAdminLogin(false);
+      setUser(result.user);
       fetchAdminData();
     } else {
       setAuthError("Invalid Admin Credentials");
@@ -452,26 +487,44 @@ export default function App() {
   };
 
   const handleAkosuaAdvice = async () => {
-    // Hidden Admin Entry: 5 taps
-    setAkosuaTapCount(prev => {
-      const newCount = prev + 1;
-      if (newCount >= 5) {
-        setIsAdminLogin(true);
-        return 0;
-      }
-      return newCount;
-    });
+    // If it's a general advice request (no input)
+    if (!akosuaInput) {
+      // Hidden Admin Entry: 5 taps
+      setAkosuaTapCount(prev => {
+        const newCount = prev + 1;
+        if (newCount >= 5) {
+          setIsAdminLogin(true);
+          return 0;
+        }
+        return newCount;
+      });
+    }
 
     setShowAkosua(true);
     setIsAkosuaLoading(true);
+    
+    const currentInput = akosuaInput;
+    setAkosuaInput(''); // Clear input
+
     if (isDemoMode) {
       setTimeout(() => {
-        setAkosuaMessage("You are doing well! Your profit is GHS " + todayProfit + ". Remember to collect GHS " + debts.reduce((a,b) => a + (b.status !== 'paid' ? b.amount : 0), 0) + " from your customers.");
+        let msg = "You are doing well! Your profit is GHS " + todayProfit + ". Remember to collect GHS " + debts.reduce((a,b) => a + (b.status !== 'paid' ? b.amount : 0), 0) + " from your customers.";
+        if (currentInput.toLowerCase().includes('profit')) {
+          msg = `You made GHS ${todayProfit}. You are doing well, but try to reduce spending small.`;
+        } else if (currentInput.toLowerCase().includes('owe')) {
+          const unpaid = debts.filter(d => d.status !== 'paid');
+          msg = unpaid.length > 0 
+            ? unpaid.map(d => `${d.name} owes you GHS ${d.amount}`).join('. ') + ". Try to collect your money."
+            : "No one owes you money right now. Good job!";
+        }
+        setAkosuaMessage(msg);
         setIsAkosuaLoading(false);
+        speakText(msg.replace(/[#*]/g, ''));
       }, 500);
       return;
     }
-    const advice = await getAkosuaAdvice(todayTransactions, debts.filter(d => d.status !== 'paid'), language);
+
+    const advice = await getAkosuaAdvice(todayTransactions, debts.filter(d => d.status !== 'paid'), language, currentInput);
     setAkosuaMessage(advice);
     setIsAkosuaLoading(false);
     // Speak advice
@@ -633,10 +686,24 @@ export default function App() {
               <User size={20} />
             </div>
             <span className="font-bold">{user.phone || 'User'}</span>
+            {isAdmin() && (
+              <span className="bg-white/20 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider">Admin</span>
+            )}
           </div>
-          <button onClick={handleLogout} className="p-2 bg-white/20 rounded-full">
-            <LogOut size={20} />
-          </button>
+          <div className="flex gap-2">
+            {isAdmin() && (
+              <button 
+                onClick={() => setShowAdminDashboard(true)} 
+                className="p-2 bg-white/20 rounded-full hover:bg-white/30 transition-colors"
+                title="Admin Dashboard"
+              >
+                <Users size={20} />
+              </button>
+            )}
+            <button onClick={handleLogout} className="p-2 bg-white/20 rounded-full">
+              <LogOut size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="text-center py-4">
@@ -891,7 +958,7 @@ export default function App() {
 
       {/* Admin Dashboard Modal */}
       <AnimatePresence>
-        {showAdminDashboard && (
+        {showAdminDashboard && isAdmin() && (
           <motion.div 
             initial={{ opacity: 0, x: '100%' }}
             animate={{ opacity: 1, x: 0 }}
@@ -1101,27 +1168,19 @@ CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHE
                   <div className="grid grid-cols-2 gap-4">
                     <Card className="bg-blue-50 border-blue-100">
                       <p className="text-xs font-bold text-blue-500 uppercase mb-1">Total Users</p>
-                      <h4 className="text-3xl font-black">{allUsers.length}</h4>
+                      <h4 className="text-3xl font-black">{adminAnalytics.totalUsers}</h4>
                     </Card>
                     <Card className="bg-green-50 border-green-100">
                       <p className="text-xs font-bold text-green-500 uppercase mb-1">Total Income</p>
-                      <h4 className="text-3xl font-black">GHS {allTransactions.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0).toFixed(0)}</h4>
+                      <h4 className="text-3xl font-black">GHS {adminAnalytics.totalIncome.toLocaleString()}</h4>
                     </Card>
                     <Card className="bg-red-50 border-red-100">
                       <p className="text-xs font-bold text-red-500 uppercase mb-1">Total Expenses</p>
-                      <h4 className="text-3xl font-black">GHS {allTransactions.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0).toFixed(0)}</h4>
+                      <h4 className="text-3xl font-black">GHS {adminAnalytics.totalExpense.toLocaleString()}</h4>
                     </Card>
                     <Card className="bg-orange-50 border-orange-100">
-                      <p className="text-xs font-bold text-orange-500 uppercase mb-1">Total Debts</p>
-                      <h4 className="text-3xl font-black">GHS {allDebts.reduce((s, d) => s + d.amount, 0).toFixed(0)}</h4>
-                    </Card>
-                    <Card className="bg-purple-50 border-purple-100">
-                      <p className="text-xs font-bold text-purple-500 uppercase mb-1">Avg Transaction</p>
-                      <h4 className="text-3xl font-black">GHS {(allTransactions.reduce((s, t) => s + t.amount, 0) / (allTransactions.length || 1)).toFixed(0)}</h4>
-                    </Card>
-                    <Card className="bg-yellow-50 border-yellow-100">
-                      <p className="text-xs font-bold text-yellow-500 uppercase mb-1">Active Today</p>
-                      <h4 className="text-3xl font-black">{new Set(allTransactions.filter(t => new Date(t.created_at).toDateString() === new Date().toDateString()).map(t => t.user_id)).size}</h4>
+                      <p className="text-xs font-bold text-orange-500 uppercase mb-1">Total Debt</p>
+                      <h4 className="text-3xl font-black">GHS {adminAnalytics.totalDebt.toLocaleString()}</h4>
                     </Card>
                   </div>
                   
@@ -1180,47 +1239,57 @@ CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHE
                       onChange={(e) => setAdminDateFilter(e.target.value)}
                     />
                   </div>
-                  {allTransactions
-                    .filter(t => adminFilter === 'all' || t.type === adminFilter)
-                    .filter(t => !adminDateFilter || new Date(t.created_at).toISOString().split('T')[0] === adminDateFilter)
-                    .map((t, i) => (
-                      <Card key={i} className="flex justify-between items-center">
-                        <div className="flex items-center gap-4">
-                          <div className={cn(
-                            'w-10 h-10 rounded-xl flex items-center justify-center',
-                            t.type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'
-                          )}>
-                            {t.type === 'income' ? <Plus size={18} /> : <Minus size={18} />}
-                          </div>
-                          <div>
-                            <p className="font-bold">{t.item || t.type}</p>
-                            <p className="text-[10px] text-gray-500">{new Date(t.created_at).toLocaleString()}</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className={cn('font-black', t.type === 'income' ? 'text-green-600' : 'text-red-600')}>
-                            GHS {t.amount}
-                          </p>
-                          <button onClick={() => deleteTransaction(t.id)} className="text-[10px] text-red-500 font-bold">Delete</button>
-                        </div>
-                      </Card>
-                    ))}
+                    {allTransactions
+                      .filter(t => adminFilter === 'all' || t.type === adminFilter)
+                      .filter(t => !adminDateFilter || new Date(t.created_at).toISOString().split('T')[0] === adminDateFilter)
+                      .map((t, i) => {
+                        const user = allUsers.find(u => u.id === t.user_id);
+                        return (
+                          <Card key={i} className="flex justify-between items-center">
+                            <div className="flex items-center gap-4">
+                              <div className={cn(
+                                'w-10 h-10 rounded-xl flex items-center justify-center',
+                                t.type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'
+                              )}>
+                                {t.type === 'income' ? <Plus size={18} /> : <Minus size={18} />}
+                              </div>
+                              <div>
+                                <p className="font-bold">{t.item || t.type}</p>
+                                <p className="text-[10px] text-gray-500">
+                                  {new Date(t.created_at).toLocaleString()} • <span className="text-orange-500 font-bold">{user?.phone || 'Unknown'}</span>
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className={cn('font-black', t.type === 'income' ? 'text-green-600' : 'text-red-600')}>
+                                GHS {t.amount}
+                              </p>
+                              <button onClick={() => deleteTransaction(t.id)} className="text-[10px] text-red-500 font-bold">Delete</button>
+                            </div>
+                          </Card>
+                        );
+                      })}
                 </div>
               )}
 
               {adminTab === 'debts' && (
                 <div className="space-y-4">
-                  {allDebts.map((d, i) => (
-                    <Card key={i} className="flex justify-between items-center">
-                      <div>
-                        <p className="font-black text-lg">{d.name}</p>
-                        <p className="text-xs text-gray-500">GHS {d.amount} • {d.status}</p>
-                      </div>
-                      {d.status !== 'paid' && (
-                        <Button onClick={() => markDebtAsPaid(d)} variant="accent" size="sm">Mark Paid</Button>
-                      )}
-                    </Card>
-                  ))}
+                  {allDebts.map((d, i) => {
+                    const user = allUsers.find(u => u.id === d.user_id);
+                    return (
+                      <Card key={i} className="flex justify-between items-center">
+                        <div>
+                          <p className="font-black text-lg">{d.name}</p>
+                          <p className="text-xs text-gray-500">
+                            GHS {d.amount} • {d.status} • <span className="text-orange-500 font-bold">{user?.phone || 'Unknown'}</span>
+                          </p>
+                        </div>
+                        {d.status !== 'paid' && (
+                          <Button onClick={() => markDebtAsPaid(d)} variant="accent" size="sm">Mark Paid</Button>
+                        )}
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1326,6 +1395,8 @@ CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHE
                 type="text" 
                 placeholder="Ask Akosua anything..." 
                 className="flex-1 bg-gray-100 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={akosuaInput}
+                onChange={(e) => setAkosuaInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleAkosuaAdvice()}
               />
               <Button onClick={handleAkosuaAdvice} variant="secondary" className="rounded-2xl p-4">
