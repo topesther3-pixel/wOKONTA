@@ -1,11 +1,74 @@
 import { supabase } from './supabase';
-import { Transaction, Debt } from './types';
+import { Transaction, Debt, UserProfile } from './types';
+
+/**
+ * LOGIN FUNCTION
+ * Authenticates user by phone and pin, or creates a new user if not found.
+ */
+export async function login(phone: string, pin: string) {
+  console.log(`Attempting login for: ${phone}`);
+  
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('*')
+    .eq('phone', phone)
+    .single();
+
+  if (user) {
+    if (user.pin === pin) {
+      localStorage.setItem('user', JSON.stringify(user));
+      return { success: true, user: user as UserProfile };
+    } else {
+      return { success: false, message: "Wrong PIN" };
+    }
+  } else {
+    // Create new user automatically
+    const { data: newUser, error: insertError } = await supabase
+      .from('users')
+      .insert([{ phone, pin }])
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Login Error (Create User):", insertError);
+      return { success: false, message: "Could not create account" };
+    }
+
+    localStorage.setItem('user', JSON.stringify(newUser));
+    return { success: true, user: newUser as UserProfile };
+  }
+}
+
+/**
+ * GET CURRENT USER
+ * Retrieves user from localStorage.
+ */
+export function getCurrentUser(): UserProfile | null {
+  const userStr = localStorage.getItem('user');
+  if (!userStr) return null;
+  try {
+    return JSON.parse(userStr);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * LOGOUT
+ * Clears user from localStorage.
+ */
+export function logout() {
+  localStorage.removeItem('user');
+}
 
 /**
  * SAVE TRANSACTION
  * Saves a new transaction to Supabase instantly.
  */
-export async function saveTransaction(type: 'income' | 'expense', amount: number, item: string = '', user_id?: string) {
+export async function saveTransaction(type: 'income' | 'expense', amount: number, item: string = '') {
+  const user = getCurrentUser();
+  if (!user) return { success: false, error: "User not logged in" };
+
   console.log(`Saving ${type}: GHS ${amount} - ${item}`);
   
   const { data, error } = await supabase
@@ -14,7 +77,7 @@ export async function saveTransaction(type: 'income' | 'expense', amount: number
       type, 
       amount, 
       item,
-      user_id: user_id || null,
+      user_id: user.id,
       created_at: new Date().toISOString()
     }])
     .select();
@@ -30,12 +93,16 @@ export async function saveTransaction(type: 'income' | 'expense', amount: number
 
 /**
  * FETCH TRANSACTIONS
- * Retrieves all transactions from Supabase.
+ * Retrieves all transactions for the current user from Supabase.
  */
 export async function getTransactions() {
+  const user = getCurrentUser();
+  if (!user) return [];
+
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -68,7 +135,10 @@ export async function getProfit() {
  * SAVE DEBT
  * Saves a new debt to Supabase.
  */
-export async function saveDebt(name: string, amount: number, user_id?: string) {
+export async function saveDebt(name: string, amount: number) {
+  const user = getCurrentUser();
+  if (!user) return { success: false, error: "User not logged in" };
+
   console.log(`Saving Debt: ${name} - GHS ${amount}`);
   
   const { data, error } = await supabase
@@ -76,7 +146,7 @@ export async function saveDebt(name: string, amount: number, user_id?: string) {
     .insert([{ 
       name, 
       amount, 
-      user_id: user_id || null,
+      user_id: user.id,
       status: 'unpaid',
       paid_amount: 0,
       created_at: new Date().toISOString()
@@ -94,50 +164,18 @@ export async function saveDebt(name: string, amount: number, user_id?: string) {
 
 /**
  * FETCH DEBTS
- * Retrieves all debts from Supabase.
+ * Retrieves all debts for the current user from Supabase.
  */
 export async function getDebts() {
+  const user = getCurrentUser();
+  if (!user) return [];
+
   const { data, error } = await supabase
     .from('debts')
     .select('*')
+    .eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
-  return data || [];
-}
-
-/**
- * SAVE USER
- * Upserts user profile to Supabase.
- */
-export async function saveUser(id: string, phoneNumber: string) {
-  const { error } = await supabase
-    .from('users')
-    .upsert([
-      { 
-        id, 
-        phone_number: phoneNumber, 
-        is_setup_complete: true,
-        created_at: new Date().toISOString()
-      }
-    ]);
-
-  return { success: true };
-}
-
-/**
- * FETCH USERS
- * Retrieves all users from Supabase.
- */
-export async function getUsers() {
-  const { data, error } = await supabase
-    .from('users')
-    .select('*');
-
-  if (error) {
-    console.error("Fetch Users Error:", error);
-    return [];
-  }
-  
   return data || [];
 }
 

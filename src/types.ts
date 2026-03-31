@@ -28,11 +28,10 @@ export interface Debt {
 
 export interface UserProfile {
   id: string;
-  displayName?: string;
-  phoneNumber?: string;
-  language?: string;
-  pinHash?: string;
-  isSetupComplete?: boolean;
+  phone: string;
+  pin: string;
+  is_setup_complete?: boolean;
+  created_at?: string;
 }
 
 export interface ParsedTransaction {

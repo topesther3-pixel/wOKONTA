@@ -4,22 +4,18 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  auth, db, storage, googleProvider, signInWithPopup, signOut, onAuthStateChanged,
-  collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy, limit,
-  ref, uploadBytes, getDownloadURL, RecaptchaVerifier, signInWithPhoneNumber
-} from './firebase';
 import { supabase, testSupabaseConnection } from './supabase';
 import { 
+  login as apiLogin,
+  getCurrentUser,
+  logout as apiLogout,
   saveTransaction as apiSaveTransaction, 
   saveDebt as apiSaveDebt, 
   getTransactions, 
   getDebts as apiGetDebts, 
   getProfit,
-  saveUser as apiSaveUser,
   deleteTransaction as apiDeleteTransaction,
-  updateDebt as apiUpdateDebt,
-  getUsers
+  updateDebt as apiUpdateDebt
 } from './api';
 import { Transaction, Debt, UserProfile, ParsedTransaction } from './types';
 import { parseTransaction, getAkosuaAdvice, cleanSpeechInput, speakText } from './services/geminiService';
@@ -37,22 +33,11 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 
-// --- Utils ---
-
-async function hashPin(pin: string): Promise<string> {
-  const msgUint8 = new TextEncoder().encode(pin);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<any>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isPinVerified, setIsPinVerified] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [language, setLanguage] = useState<string>('English');
   const [showWhatsApp, setShowWhatsApp] = useState(false);
@@ -88,15 +73,11 @@ export default function App() {
   const [adminPin, setAdminPin] = useState('');
 
   // Auth State
-  const [authState, setAuthState] = useState<'phone' | 'otp' | 'pin-setup' | 'pin-confirm' | 'pin-login'>('phone');
+  const [authState, setAuthState] = useState<'phone' | 'pin-login'>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [otp, setOtp] = useState('');
   const [pin, setPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [confirmationResult, setConfirmationResult] = useState<any>(null);
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
-  const [isResettingPin, setIsResettingPin] = useState(false);
 
   // Auth Listener
   useEffect(() => {
@@ -105,31 +86,12 @@ export default function App() {
       setSupabaseStatus(status);
     };
     checkConnection();
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        const docRef = doc(db, 'users', u.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const p = docSnap.data() as UserProfile;
-          setProfile(p);
-          if (p.isSetupComplete && !isResettingPin) {
-            setAuthState('pin-login');
-          } else {
-            setAuthState('pin-setup');
-          }
-        } else {
-          setAuthState('pin-setup');
-        }
-        setUser({ ...u, id: u.uid });
-      } else {
-        setUser(null);
-        setProfile(null);
-        setAuthState('phone');
-        setIsPinVerified(false);
-      }
-      setLoading(false);
-    });
-    return unsubscribe;
+
+    const currentUser = getCurrentUser();
+    if (currentUser) {
+      setUser(currentUser);
+    }
+    setLoading(false);
   }, []);
 
   // Data Listeners
@@ -149,7 +111,7 @@ export default function App() {
       return;
     }
 
-    if (!user || !isPinVerified) return;
+    if (!user) return;
 
     // Fetch from Supabase
     const fetchSupabaseData = async () => {
@@ -196,7 +158,7 @@ export default function App() {
       supabase.removeChannel(txSubscription);
       supabase.removeChannel(debtSubscription);
     };
-  }, [user, isPinVerified, isDemoMode]);
+  }, [user, isDemoMode]);
 
   // Calculations
   const today = new Date().setHours(0, 0, 0, 0);
@@ -211,129 +173,51 @@ export default function App() {
 
   // --- Auth Handlers ---
 
-  const handleSendOtp = async (e: React.FormEvent) => {
+  const handleNextToPin = (e: React.FormEvent) => {
     e.preventDefault();
+    if (phoneNumber.length < 10) {
+      setAuthError("Please enter a valid phone number.");
+      return;
+    }
     setAuthError('');
-    setIsAuthLoading(true);
-
-    // Demo Mode
-    if (phoneNumber === '0240000000') {
-      setAuthState('pin-login');
-      setIsAuthLoading(false);
-      return;
-    }
-
-    try {
-      const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-        size: 'invisible'
-      });
-      // Format to international (Ghana +233)
-      const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+233${phoneNumber.startsWith('0') ? phoneNumber.slice(1) : phoneNumber}`;
-      const result = await signInWithPhoneNumber(auth, formattedPhone, verifier);
-      setConfirmationResult(result);
-      setAuthState('otp');
-    } catch (err: any) {
-      setAuthError(err.message);
-    } finally {
-      setIsAuthLoading(false);
-    }
+    setAuthState('pin-login');
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    setIsAuthLoading(true);
-
-    // Demo Mode
-    if (phoneNumber === '0240000000' && otp === '123456') {
-      // In a real app, we'd need to sign in. For demo, we'll just mock it if possible
-      // But since we need a real UID, let's just use Google login as a fallback or alert
-      alert("Demo mode requires real Firebase Auth. Please use your real number for OTP.");
-      setIsAuthLoading(false);
-      return;
-    }
-
-    try {
-      await confirmationResult.confirm(otp);
-      // Auth listener will handle the rest
-    } catch (err: any) {
-      setAuthError("Wrong code. Try again.");
-    } finally {
-      setIsAuthLoading(false);
-    }
-  };
-
-  const handlePinSetup = async () => {
-    if (pin.length !== 4) return;
-    setAuthState('pin-confirm');
-  };
-
-  const handlePinConfirm = async () => {
-    if (pin !== confirmPin) {
-      setAuthError("PINs do not match.");
-      setConfirmPin('');
-      return;
-    }
-
-    setIsAuthLoading(true);
-    try {
-      const hashed = await hashPin(pin);
-      
-      // Save to Supabase
-      await apiSaveUser(user.id, user.phoneNumber || '');
-      
-      // Save to Firestore
-      await setDoc(doc(db, 'users', user.id), {
-        id: user.id,
-        phoneNumber: user.phoneNumber,
-        pinHash: hashed,
-        isSetupComplete: true
-      });
-      setIsPinVerified(true);
-      setIsResettingPin(false);
-    } catch (err: any) {
-      setAuthError(err.message);
-    } finally {
-      setIsAuthLoading(false);
-    }
-  };
-
-  const handlePinLogin = async () => {
+  const handleLogin = async () => {
     if (pin.length !== 4) return;
     
-    // Demo Mode check
-    if (phoneNumber === '0240000000' && pin === '1234') {
-      setIsDemoMode(true);
-      setUser({ id: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
-      setIsPinVerified(true);
-      resetDemo();
-      return;
-    }
+    setIsAuthLoading(true);
+    setAuthError('');
 
-    const hashed = await hashPin(pin);
-    if (profile?.pinHash === hashed) {
-      setIsPinVerified(true);
-    } else {
-      setAuthError("Wrong PIN. Try again.");
-      setPin('');
+    try {
+      const result = await apiLogin(phoneNumber, pin);
+      if (result.success && result.user) {
+        setUser(result.user);
+      } else {
+        setAuthError(result.message || "Login failed");
+        setPin('');
+      }
+    } catch (err: any) {
+      setAuthError("Connection error. Try again.");
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
   const handleLogout = () => {
-    signOut(auth);
-    setIsPinVerified(false);
+    apiLogout();
+    setUser(null);
     setIsDemoMode(false);
     setIsAdminMode(false);
     setShowAdminDashboard(false);
     setPin('');
     setPhoneNumber('');
-    setOtp('');
+    setAuthState('phone');
   };
 
   const handleEnterDemoMode = () => {
     setIsDemoMode(true);
-    setUser({ id: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
-    setIsPinVerified(true);
+    setUser({ id: 'demo', phone: '0240000000', pin: '1234' });
     resetDemo();
   };
 
@@ -355,30 +239,40 @@ export default function App() {
   useEffect(() => {
     if (!isAdminMode || !showAdminDashboard) return;
 
-    // Real-time listeners for Admin
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      setAllUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    // Real-time listeners for Admin using Supabase
+    const usersSubscription = supabase
+      .channel('admin-users')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+        fetchAdminData();
+      })
+      .subscribe();
 
-    const unsubTxs = onSnapshot(query(collection(db, 'transactions'), orderBy('createdAt', 'desc')), (snapshot) => {
-      setAllTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), created_at: doc.data().createdAt?.toDate?.()?.toISOString() || new Date().toISOString() })));
-    });
+    const txSubscription = supabase
+      .channel('admin-transactions')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+        fetchAdminData();
+      })
+      .subscribe();
 
-    const unsubDebts = onSnapshot(query(collection(db, 'debts'), orderBy('createdAt', 'desc')), (snapshot) => {
-      setAllDebts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), created_at: doc.data().createdAt?.toDate?.()?.toISOString() || new Date().toISOString() })));
-    });
+    const debtSubscription = supabase
+      .channel('admin-debts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' }, () => {
+        fetchAdminData();
+      })
+      .subscribe();
+
+    fetchAdminData();
 
     return () => {
-      unsubUsers();
-      unsubTxs();
-      unsubDebts();
+      supabase.removeChannel(usersSubscription);
+      supabase.removeChannel(txSubscription);
+      supabase.removeChannel(debtSubscription);
     };
   }, [isAdminMode, showAdminDashboard]);
 
   const fetchAdminData = async () => {
-    // This is now handled by onSnapshot, but keeping it for manual refresh if needed
     try {
-      const users = await getUsers();
+      const { data: users } = await supabase.from('users').select('*');
       const txs = await getTransactions();
       const debts = await apiGetDebts();
       
@@ -408,9 +302,7 @@ export default function App() {
       const { success } = await apiDeleteTransaction(id);
       if (!success) throw new Error("Failed to delete from Supabase");
       
-      // Delete from Firestore
-      await deleteDoc(doc(db, 'transactions', id));
-      // No need to call fetchAdminData because onSnapshot will handle it
+      fetchAdminData();
     } catch (err) {
       console.error("Delete failed", err);
     }
@@ -419,7 +311,7 @@ export default function App() {
   // --- App Handlers ---
 
   const saveTransaction = async (data: Partial<Transaction>) => {
-    const userId = isDemoMode ? 'demo' : user?.id;
+    const userId = user?.id;
     if (!userId) return;
 
     try {
@@ -427,24 +319,10 @@ export default function App() {
       const result = await apiSaveTransaction(
         data.type as 'income' | 'expense', 
         data.amount || 0, 
-        data.item || '', 
-        userId
+        data.item || ''
       );
 
       if (!result.success) throw result.error;
-
-      // If in demo mode, we still update local state for immediate feedback if needed, 
-      // but the real-time listener should handle it anyway.
-      
-      // Also save to Firestore for backup/sync (optional)
-      if (!isDemoMode) {
-        const newDoc = doc(collection(db, 'transactions'));
-        await setDoc(newDoc, {
-          user_id: userId,
-          createdAt: new Date(),
-          ...data
-        });
-      }
 
       setShowAddModal(null);
       setFormData({ amount: '', item: '', name: '' });
@@ -460,31 +338,17 @@ export default function App() {
   };
 
   const saveDebt = async (data: Partial<Debt>) => {
-    const userId = isDemoMode ? 'demo' : user?.id;
+    const userId = user?.id;
     if (!userId) return;
 
     try {
       // Save to Supabase using API layer
       const result = await apiSaveDebt(
         data.name || '', 
-        data.amount || 0, 
-        userId
+        data.amount || 0
       );
 
       if (!result.success) throw result.error;
-
-      // Also save to Firestore
-      if (!isDemoMode) {
-        const newDoc = doc(collection(db, 'debts'));
-        await setDoc(newDoc, {
-          user_id: userId,
-          paidAmount: 0,
-          status: 'unpaid',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          ...data
-        });
-      }
 
       setShowAddModal(null);
       setFormData({ amount: '', item: '', name: '' });
@@ -503,13 +367,6 @@ export default function App() {
       });
 
       if (!success) throw new Error("Failed to update debt in Supabase");
-
-      // Update Firestore
-      await updateDoc(doc(db, 'debts', debt.id), {
-        status: 'paid',
-        paidAmount: debt.amount,
-        updatedAt: new Date()
-      });
 
       await saveTransaction({
         type: 'income',
@@ -636,20 +493,8 @@ export default function App() {
       return;
     }
 
-    try {
-      const storageRef = ref(storage, `transactions/${user.id}/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      await saveTransaction({ 
-        type: 'expense', 
-        amount: 0, 
-        item: 'Photo Upload', 
-        imageUrl: url 
-      });
-      alert("Photo saved!");
-    } catch (err) {
-      console.error("Upload failed", err);
-    }
+    // Storage logic removed for now as it was Firebase-based
+    alert("Storage not yet configured for Supabase.");
   };
 
   if (loading) {
@@ -662,11 +507,9 @@ export default function App() {
 
   // --- Auth Screens ---
 
-  if (!user || !isPinVerified) {
+  if (!user) {
     return (
       <div className="min-h-screen bg-orange-50 flex flex-col items-center justify-center p-6 text-center">
-        <div id="recaptcha-container"></div>
-        
         <div className="w-20 h-20 bg-orange-500 rounded-3xl flex items-center justify-center mb-8 shadow-xl rotate-3 cursor-pointer" onContextMenu={(e) => { e.preventDefault(); setIsAdminLogin(true); }}>
           <Wallet className="text-white" size={40} />
         </div>
@@ -682,7 +525,7 @@ export default function App() {
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
-                onSubmit={handleSendOtp}
+                onSubmit={handleNextToPin}
                 className="space-y-6"
               >
                 <div className="text-left">
@@ -701,7 +544,7 @@ export default function App() {
                 </div>
                 {authError && <p className="text-red-500 text-sm font-bold">{authError}</p>}
                 <Button type="submit" size="lg" className="w-full" disabled={isAuthLoading}>
-                  {isAuthLoading ? <Loader2 className="animate-spin" /> : 'Next'}
+                  Next
                 </Button>
                 
                 <div className="pt-4 border-t border-gray-100">
@@ -716,98 +559,6 @@ export default function App() {
               </motion.form>
             )}
 
-            {authState === 'otp' && (
-              <motion.form 
-                key="otp"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                onSubmit={handleVerifyOtp}
-                className="space-y-6"
-              >
-                <div className="text-left">
-                  <label className="text-sm font-bold text-gray-500 mb-2 block">Enter Code sent to {phoneNumber}</label>
-                  <input 
-                    type="text" 
-                    required
-                    maxLength={6}
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value)}
-                    placeholder="123456"
-                    className="w-full bg-gray-100 rounded-2xl px-6 py-4 text-3xl font-black tracking-[0.5em] text-center focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  />
-                </div>
-                {authError && <p className="text-red-500 text-sm font-bold">{authError}</p>}
-                <Button type="submit" size="lg" className="w-full" disabled={isAuthLoading}>
-                  {isAuthLoading ? <Loader2 className="animate-spin" /> : 'Verify'}
-                </Button>
-                <button type="button" onClick={() => setAuthState('phone')} className="text-orange-500 font-bold text-sm">Change Number</button>
-              </motion.form>
-            )}
-
-            {authState === 'pin-setup' && (
-              <motion.div 
-                key="pin-setup"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="space-y-8"
-              >
-                <div className="text-center">
-                  <h3 className="text-xl font-black mb-2">Create your 4-digit PIN</h3>
-                  <p className="text-gray-500 text-sm">To keep your money records safe.</p>
-                </div>
-                <PinInput value={pin} onChange={setPin} />
-                <div className="grid grid-cols-3 gap-4">
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 'C', 0, 'OK'].map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => {
-                        if (n === 'C') setPin('');
-                        else if (n === 'OK') handlePinSetup();
-                        else if (pin.length < 4) setPin(pin + n);
-                      }}
-                      className="h-16 bg-gray-100 rounded-2xl text-2xl font-black hover:bg-gray-200 transition-colors"
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-
-            {authState === 'pin-confirm' && (
-              <motion.div 
-                key="pin-confirm"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="space-y-8"
-              >
-                <div className="text-center">
-                  <h3 className="text-xl font-black mb-2">Confirm your PIN</h3>
-                  <p className="text-gray-500 text-sm">Enter it one more time.</p>
-                </div>
-                <PinInput value={confirmPin} onChange={setConfirmPin} />
-                {authError && <p className="text-red-500 text-sm font-bold">{authError}</p>}
-                <div className="grid grid-cols-3 gap-4">
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 'C', 0, 'OK'].map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => {
-                        if (n === 'C') setConfirmPin('');
-                        else if (n === 'OK') handlePinConfirm();
-                        else if (confirmPin.length < 4) setConfirmPin(confirmPin + n);
-                      }}
-                      className="h-16 bg-gray-100 rounded-2xl text-2xl font-black hover:bg-gray-200 transition-colors"
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-
             {authState === 'pin-login' && (
               <motion.div 
                 key="pin-login"
@@ -817,18 +568,19 @@ export default function App() {
                 className="space-y-8"
               >
                 <div className="text-center">
-                  <h3 className="text-xl font-black mb-2">Welcome Back</h3>
-                  <p className="text-gray-500 text-sm">Enter your 4-digit PIN to login.</p>
+                  <h3 className="text-xl font-black mb-2">Enter your 4-digit PIN</h3>
+                  <p className="text-gray-500 text-sm">To keep your money records safe.</p>
                 </div>
                 <PinInput value={pin} onChange={setPin} />
                 {authError && <p className="text-red-500 text-sm font-bold">{authError}</p>}
+                {isAuthLoading && <div className="flex justify-center"><Loader2 className="animate-spin text-orange-500" /></div>}
                 <div className="grid grid-cols-3 gap-4">
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, 'C', 0, 'OK'].map((n) => (
                     <button
                       key={n}
                       onClick={() => {
                         if (n === 'C') setPin('');
-                        else if (n === 'OK') handlePinLogin();
+                        else if (n === 'OK') handleLogin();
                         else if (pin.length < 4) setPin(pin + n);
                       }}
                       className="h-16 bg-gray-100 rounded-2xl text-2xl font-black hover:bg-gray-200 transition-colors"
@@ -837,19 +589,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <div className="flex flex-col gap-4">
-                  <button onClick={handleLogout} className="text-gray-400 font-bold text-sm">Logout</button>
-                  <button 
-                    onClick={() => {
-                      setIsResettingPin(true);
-                      setAuthState('phone');
-                      setAuthError('Please verify your phone to reset PIN.');
-                    }} 
-                    className="text-orange-500 font-bold text-sm"
-                  >
-                    Forgot PIN?
-                  </button>
-                </div>
+                <button type="button" onClick={() => setAuthState('phone')} className="text-orange-500 font-bold text-sm">Change Number</button>
               </motion.div>
             )}
           </AnimatePresence>
@@ -892,7 +632,7 @@ export default function App() {
             <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
               <User size={20} />
             </div>
-            <span className="font-bold">{user.phoneNumber || 'User'}</span>
+            <span className="font-bold">{user.phone || 'User'}</span>
           </div>
           <button onClick={handleLogout} className="p-2 bg-white/20 rounded-full">
             <LogOut size={20} />
@@ -1402,10 +1142,10 @@ CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHE
                     value={adminSearch}
                     onChange={(e) => setAdminSearch(e.target.value)}
                   />
-                  {allUsers.filter(u => (u.phone_number || u.phoneNumber)?.includes(adminSearch)).map((u, i) => (
+                  {allUsers.filter(u => (u.phone || '').includes(adminSearch)).map((u, i) => (
                     <Card key={i} className="flex justify-between items-center">
                       <div>
-                        <p className="font-black text-lg">{u.phone_number || u.phoneNumber || 'Unknown'}</p>
+                        <p className="font-black text-lg">{u.phone || 'Unknown'}</p>
                         <p className="text-xs text-gray-500">Joined: {new Date(u.created_at || Date.now()).toLocaleDateString()}</p>
                       </div>
                       <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
