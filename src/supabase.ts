@@ -12,7 +12,13 @@ export const testSupabaseConnection = async () => {
     const { error: txError } = await supabase.from('transactions').select('id').limit(1);
     if (txError) {
       console.error("Supabase Connection Test Failed (transactions):", txError.message);
-      return { success: false, error: `Table 'transactions' missing or inaccessible: ${txError.message}` };
+      const isSchemaError = txError.message.includes("schema cache") || txError.message.includes("does not exist");
+      return { 
+        success: false, 
+        error: isSchemaError 
+          ? "Database tables are missing. Please run the SQL schema in your Supabase SQL Editor." 
+          : `Table 'transactions' missing or inaccessible: ${txError.message}` 
+      };
     }
 
     // Check debts table
@@ -23,10 +29,16 @@ export const testSupabaseConnection = async () => {
     }
 
     // Check users table
-    const { error: userError } = await supabase.from('users').select('uid').limit(1);
+    const { error: userError } = await supabase.from('users').select('*').limit(1);
     if (userError) {
       console.error("Supabase Connection Test Failed (users):", userError.message);
-      return { success: false, error: `Table 'users' missing or inaccessible: ${userError.message}` };
+      const isColumnError = userError.message.includes("column") && userError.message.includes("does not exist");
+      return { 
+        success: false, 
+        error: isColumnError 
+          ? "The 'users' table has the wrong columns. Please run the 'Fresh Start' SQL in the Setup Guide." 
+          : `Table 'users' missing or inaccessible: ${userError.message}` 
+      };
     }
 
     console.log("Supabase Connection Test Succeeded!");

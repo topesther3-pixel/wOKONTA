@@ -5,7 +5,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- 1. Users Table
 CREATE TABLE IF NOT EXISTS public.users (
-    uid TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     phone_number TEXT,
     is_setup_complete BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 -- 2. Transactions Table
 CREATE TABLE IF NOT EXISTS public.transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    uid TEXT REFERENCES public.users(uid) ON DELETE CASCADE,
+    user_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
     type TEXT CHECK (type IN ('income', 'expense')),
     amount NUMERIC NOT NULL DEFAULT 0,
     item TEXT,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS public.transactions (
 -- 3. Debts Table
 CREATE TABLE IF NOT EXISTS public.debts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    uid TEXT REFERENCES public.users(uid) ON DELETE CASCADE,
+    user_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     amount NUMERIC NOT NULL DEFAULT 0,
     paid_amount NUMERIC DEFAULT 0,

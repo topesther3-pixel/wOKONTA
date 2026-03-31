@@ -4,7 +4,7 @@ export type DebtStatus = 'unpaid' | 'partial' | 'paid';
 
 export interface Transaction {
   id?: string;
-  uid: string;
+  user_id: string;
   type: TransactionType;
   category?: ExpenseCategory;
   amount: number;
@@ -17,7 +17,7 @@ export interface Transaction {
 
 export interface Debt {
   id?: string;
-  uid: string;
+  user_id: string;
   name: string;
   amount: number;
   paidAmount: number;
@@ -27,7 +27,7 @@ export interface Debt {
 }
 
 export interface UserProfile {
-  uid: string;
+  id: string;
   displayName?: string;
   phoneNumber?: string;
   language?: string;

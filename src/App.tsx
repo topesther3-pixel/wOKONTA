@@ -120,7 +120,7 @@ export default function App() {
         } else {
           setAuthState('pin-setup');
         }
-        setUser(u);
+        setUser({ ...u, id: u.uid });
       } else {
         setUser(null);
         setProfile(null);
@@ -137,12 +137,12 @@ export default function App() {
     if (isDemoMode) {
       // Preload Demo Data
       const mockTransactions: Transaction[] = [
-        { id: 'demo1', uid: 'demo', type: 'income', amount: 120, item: 'Tomato Sale', createdAt: { toDate: () => new Date() } as any },
-        { id: 'demo2', uid: 'demo', type: 'expense', amount: 75, item: 'Transport', createdAt: { toDate: () => new Date() } as any },
+        { id: 'demo1', user_id: 'demo', type: 'income', amount: 120, item: 'Tomato Sale', createdAt: { toDate: () => new Date() } as any },
+        { id: 'demo2', user_id: 'demo', type: 'expense', amount: 75, item: 'Transport', createdAt: { toDate: () => new Date() } as any },
       ];
       const mockDebts: Debt[] = [
-        { id: 'debt1', uid: 'demo', name: 'Adjoa', amount: 20, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
-        { id: 'debt2', uid: 'demo', name: 'Ama', amount: 15, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'debt1', user_id: 'demo', name: 'Adjoa', amount: 20, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'debt2', user_id: 'demo', name: 'Ama', amount: 15, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
       ];
       setTransactions(mockTransactions);
       setDebts(mockDebts);
@@ -280,11 +280,11 @@ export default function App() {
       const hashed = await hashPin(pin);
       
       // Save to Supabase
-      await apiSaveUser(user.uid, user.phoneNumber || '');
+      await apiSaveUser(user.id, user.phoneNumber || '');
       
       // Save to Firestore
-      await setDoc(doc(db, 'users', user.uid), {
-        uid: user.uid,
+      await setDoc(doc(db, 'users', user.id), {
+        id: user.id,
         phoneNumber: user.phoneNumber,
         pinHash: hashed,
         isSetupComplete: true
@@ -304,7 +304,7 @@ export default function App() {
     // Demo Mode check
     if (phoneNumber === '0240000000' && pin === '1234') {
       setIsDemoMode(true);
-      setUser({ uid: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
+      setUser({ id: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
       setIsPinVerified(true);
       resetDemo();
       return;
@@ -332,19 +332,19 @@ export default function App() {
 
   const handleEnterDemoMode = () => {
     setIsDemoMode(true);
-    setUser({ uid: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
+    setUser({ id: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
     setIsPinVerified(true);
     resetDemo();
   };
 
   const resetDemo = () => {
     const mockTransactions: Transaction[] = [
-      { id: 'demo1', uid: 'demo', type: 'income', amount: 120, item: 'Tomato Sale', createdAt: { toDate: () => new Date() } as any },
-      { id: 'demo2', uid: 'demo', type: 'expense', amount: 75, item: 'Transport', createdAt: { toDate: () => new Date() } as any },
+      { id: 'demo1', user_id: 'demo', type: 'income', amount: 120, item: 'Tomato Sale', createdAt: { toDate: () => new Date() } as any },
+      { id: 'demo2', user_id: 'demo', type: 'expense', amount: 75, item: 'Transport', createdAt: { toDate: () => new Date() } as any },
     ];
     const mockDebts: Debt[] = [
-      { id: 'debt1', uid: 'demo', name: 'Adjoa', amount: 20, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
-      { id: 'debt2', uid: 'demo', name: 'Ama', amount: 15, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'debt1', user_id: 'demo', name: 'Adjoa', amount: 20, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'debt2', user_id: 'demo', name: 'Ama', amount: 15, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
     ];
     setTransactions(mockTransactions);
     setDebts(mockDebts);
@@ -419,8 +419,8 @@ export default function App() {
   // --- App Handlers ---
 
   const saveTransaction = async (data: Partial<Transaction>) => {
-    const uid = isDemoMode ? 'demo' : user?.uid;
-    if (!uid) return;
+    const userId = isDemoMode ? 'demo' : user?.id;
+    if (!userId) return;
 
     try {
       // Save to Supabase using API layer
@@ -428,7 +428,7 @@ export default function App() {
         data.type as 'income' | 'expense', 
         data.amount || 0, 
         data.item || '', 
-        uid
+        userId
       );
 
       if (!result.success) throw result.error;
@@ -440,7 +440,7 @@ export default function App() {
       if (!isDemoMode) {
         const newDoc = doc(collection(db, 'transactions'));
         await setDoc(newDoc, {
-          uid,
+          user_id: userId,
           createdAt: new Date(),
           ...data
         });
@@ -460,15 +460,15 @@ export default function App() {
   };
 
   const saveDebt = async (data: Partial<Debt>) => {
-    const uid = isDemoMode ? 'demo' : user?.uid;
-    if (!uid) return;
+    const userId = isDemoMode ? 'demo' : user?.id;
+    if (!userId) return;
 
     try {
       // Save to Supabase using API layer
       const result = await apiSaveDebt(
         data.name || '', 
         data.amount || 0, 
-        uid
+        userId
       );
 
       if (!result.success) throw result.error;
@@ -477,7 +477,7 @@ export default function App() {
       if (!isDemoMode) {
         const newDoc = doc(collection(db, 'debts'));
         await setDoc(newDoc, {
-          uid,
+          user_id: userId,
           paidAmount: 0,
           status: 'unpaid',
           createdAt: new Date(),
@@ -637,7 +637,7 @@ export default function App() {
     }
 
     try {
-      const storageRef = ref(storage, `transactions/${user.uid}/${Date.now()}_${file.name}`);
+      const storageRef = ref(storage, `transactions/${user.id}/${Date.now()}_${file.name}`);
       await uploadBytes(storageRef, file);
       const url = await getDownloadURL(storageRef);
       await saveTransaction({ 
@@ -914,6 +914,47 @@ export default function App() {
       </header>
 
       <main className="p-6 max-w-md mx-auto space-y-6">
+        {/* Supabase Connection Warning */}
+        {!supabaseStatus?.success && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-red-50 border border-red-200 p-4 rounded-2xl flex items-start gap-3 shadow-sm"
+          >
+            <AlertCircle className="text-red-500 shrink-0 mt-1" size={20} />
+            <div className="flex-1">
+              <h4 className="font-black text-red-700 text-sm">Database Setup Required</h4>
+              <p className="text-xs text-red-600 mb-2">
+                The Supabase tables are missing. Please run the SQL schema in your Supabase SQL Editor.
+              </p>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => {
+                    setAkosuaTapCount(5); // Secretly trigger admin login
+                    setAdminTab('supabase');
+                    setShowAdminDashboard(true);
+                  }}
+                  className="text-[10px] bg-red-100 px-3 py-1.5 rounded-lg font-black text-red-700 hover:bg-red-200 transition-colors"
+                >
+                  View Setup Guide
+                </button>
+                <button 
+                  onClick={async () => {
+                    const status = await testSupabaseConnection();
+                    setSupabaseStatus(status);
+                    if (status.success) {
+                      alert("Connected successfully!");
+                    }
+                  }}
+                  className="text-[10px] bg-white px-3 py-1.5 rounded-lg font-black text-red-700 hover:bg-gray-50 transition-colors border border-red-200"
+                >
+                  Retry Connection
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
         {/* Quick Actions */}
         <div className="grid grid-cols-2 gap-4">
           <Button 
@@ -1145,23 +1186,78 @@ export default function App() {
             <div className="flex-1 overflow-y-auto p-6 space-y-8">
               {adminTab === 'supabase' && (
                 <div className="p-6 space-y-6 overflow-y-auto flex-1">
+                  <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl flex items-center justify-between">
+                    <div>
+                      <h4 className="font-bold text-orange-700">Demo Mode (Local Only)</h4>
+                      <p className="text-xs text-orange-600">Bypass Supabase and use local storage for this session.</p>
+                    </div>
+                    <button 
+                      onClick={() => setIsDemoMode(!isDemoMode)}
+                      className={cn(
+                        "px-4 py-2 rounded-lg font-black text-xs transition-all",
+                        isDemoMode ? "bg-orange-500 text-white shadow-md" : "bg-white text-orange-500 border border-orange-500"
+                      )}
+                    >
+                      {isDemoMode ? "ON" : "OFF"}
+                    </button>
+                  </div>
+
                   <div className={cn(
-                    "p-4 rounded-xl border",
+                    "p-4 rounded-xl border flex items-center justify-between",
                     supabaseStatus?.success ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"
                   )}>
-                    <h4 className="font-bold">Connection Status</h4>
-                    <p className="text-sm">{supabaseStatus?.success ? "Connected successfully!" : `Error: ${supabaseStatus?.error}`}</p>
+                    <div>
+                      <h4 className="font-bold">Connection Status</h4>
+                      <p className="text-sm">{supabaseStatus?.success ? "Connected successfully!" : `Error: ${supabaseStatus?.error}`}</p>
+                    </div>
+                    <button 
+                      onClick={async () => {
+                        const status = await testSupabaseConnection();
+                        setSupabaseStatus(status);
+                      }}
+                      className="text-[10px] bg-white px-3 py-1.5 rounded-lg font-black border border-current hover:bg-white/50"
+                    >
+                      Re-test Connection
+                    </button>
                   </div>
 
                   {!supabaseStatus?.success && (
                     <div className="space-y-4">
-                      <h4 className="font-black text-xl">Required SQL Schema</h4>
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-black text-xl">Required SQL Schema</h4>
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => {
+                              const sql = document.getElementById('supabase-sql-fresh')?.innerText;
+                              if (sql) {
+                                navigator.clipboard.writeText(sql);
+                                alert("Fresh Start SQL copied! This will reset your tables.");
+                              }
+                            }}
+                            className="text-[10px] bg-red-100 px-3 py-1.5 rounded-lg font-black text-red-700 hover:bg-red-200"
+                          >
+                            Fresh Start (Reset)
+                          </button>
+                          <button 
+                            onClick={() => {
+                              const sql = document.getElementById('supabase-sql')?.innerText;
+                              if (sql) {
+                                navigator.clipboard.writeText(sql);
+                                alert("SQL copied to clipboard!");
+                              }
+                            }}
+                            className="text-[10px] bg-orange-100 px-3 py-1.5 rounded-lg font-black text-orange-700 hover:bg-orange-200"
+                          >
+                            Copy SQL
+                          </button>
+                        </div>
+                      </div>
                       <p className="text-sm text-gray-600">Run this SQL in your Supabase SQL Editor to create the missing tables:</p>
-                      <pre className="bg-gray-900 text-gray-100 p-4 rounded-xl text-xs overflow-x-auto font-mono">
+                      <pre id="supabase-sql" className="bg-gray-900 text-gray-100 p-4 rounded-xl text-xs overflow-x-auto font-mono">
 {`CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS public.users (
-    uid TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     phone_number TEXT,
     is_setup_complete BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -1169,7 +1265,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 
 CREATE TABLE IF NOT EXISTS public.transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    uid TEXT REFERENCES public.users(uid) ON DELETE CASCADE,
+    user_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
     type TEXT CHECK (type IN ('income', 'expense')),
     amount NUMERIC NOT NULL DEFAULT 0,
     item TEXT,
@@ -1182,7 +1278,7 @@ CREATE TABLE IF NOT EXISTS public.transactions (
 
 CREATE TABLE IF NOT EXISTS public.debts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    uid TEXT REFERENCES public.users(uid) ON DELETE CASCADE,
+    user_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     amount NUMERIC NOT NULL DEFAULT 0,
     paid_amount NUMERIC DEFAULT 0,
@@ -1199,6 +1295,52 @@ CREATE POLICY "Allow all on users" ON public.users FOR ALL USING (true) WITH CHE
 CREATE POLICY "Allow all on transactions" ON public.transactions FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHECK (true);`}
                       </pre>
+                      <div className="hidden" id="supabase-sql-fresh">
+{`DROP TABLE IF EXISTS public.transactions;
+DROP TABLE IF EXISTS public.debts;
+DROP TABLE IF EXISTS public.users;
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE public.users (
+    id TEXT PRIMARY KEY,
+    phone_number TEXT,
+    is_setup_complete BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE public.transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
+    type TEXT CHECK (type IN ('income', 'expense')),
+    amount NUMERIC NOT NULL DEFAULT 0,
+    item TEXT,
+    category TEXT DEFAULT 'business',
+    quantity NUMERIC,
+    unit TEXT,
+    image_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE public.debts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    paid_amount NUMERIC DEFAULT 0,
+    status TEXT CHECK (status IN ('unpaid', 'paid')) DEFAULT 'unpaid',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.debts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all on users" ON public.users FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on transactions" ON public.transactions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHECK (true);`}
+                      </div>
                       <Button 
                         onClick={async () => {
                           const status = await testSupabaseConnection();
@@ -1239,7 +1381,7 @@ CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHE
                     </Card>
                     <Card className="bg-yellow-50 border-yellow-100">
                       <p className="text-xs font-bold text-yellow-500 uppercase mb-1">Active Today</p>
-                      <h4 className="text-3xl font-black">{new Set(allTransactions.filter(t => new Date(t.created_at).toDateString() === new Date().toDateString()).map(t => t.uid)).size}</h4>
+                      <h4 className="text-3xl font-black">{new Set(allTransactions.filter(t => new Date(t.created_at).toDateString() === new Date().toDateString()).map(t => t.user_id)).size}</h4>
                     </Card>
                   </div>
                   

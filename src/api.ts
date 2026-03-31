@@ -5,7 +5,7 @@ import { Transaction, Debt } from './types';
  * SAVE TRANSACTION
  * Saves a new transaction to Supabase instantly.
  */
-export async function saveTransaction(type: 'income' | 'expense', amount: number, item: string = '', uid?: string) {
+export async function saveTransaction(type: 'income' | 'expense', amount: number, item: string = '', user_id?: string) {
   console.log(`Saving ${type}: GHS ${amount} - ${item}`);
   
   const { data, error } = await supabase
@@ -14,7 +14,7 @@ export async function saveTransaction(type: 'income' | 'expense', amount: number
       type, 
       amount, 
       item,
-      uid: uid || null,
+      user_id: user_id || null,
       created_at: new Date().toISOString()
     }])
     .select();
@@ -68,7 +68,7 @@ export async function getProfit() {
  * SAVE DEBT
  * Saves a new debt to Supabase.
  */
-export async function saveDebt(name: string, amount: number, uid?: string) {
+export async function saveDebt(name: string, amount: number, user_id?: string) {
   console.log(`Saving Debt: ${name} - GHS ${amount}`);
   
   const { data, error } = await supabase
@@ -76,7 +76,7 @@ export async function saveDebt(name: string, amount: number, uid?: string) {
     .insert([{ 
       name, 
       amount, 
-      uid: uid || null,
+      user_id: user_id || null,
       status: 'unpaid',
       paid_amount: 0,
       created_at: new Date().toISOString()
@@ -109,12 +109,12 @@ export async function getDebts() {
  * SAVE USER
  * Upserts user profile to Supabase.
  */
-export async function saveUser(uid: string, phoneNumber: string) {
+export async function saveUser(id: string, phoneNumber: string) {
   const { error } = await supabase
     .from('users')
     .upsert([
       { 
-        uid, 
+        id, 
         phone_number: phoneNumber, 
         is_setup_complete: true,
         created_at: new Date().toISOString()
