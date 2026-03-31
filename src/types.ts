@@ -44,4 +44,6 @@ export interface ParsedTransaction {
   category?: ExpenseCategory;
   isDebt?: boolean;
   debtorName?: string;
+  language?: string; // Detected language
+  response?: string; // Translated response in user's language
 }

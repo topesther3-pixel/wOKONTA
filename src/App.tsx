@@ -9,13 +9,15 @@ import {
   collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy, limit,
   ref, uploadBytes, getDownloadURL, RecaptchaVerifier, signInWithPhoneNumber
 } from './firebase';
+import { supabase, testSupabaseConnection } from './lib/supabase';
 import { Transaction, Debt, UserProfile, ParsedTransaction } from './types';
-import { parseTransaction, getAkosuaAdvice } from './services/geminiService';
+import { parseTransaction, getAkosuaAdvice, cleanSpeechInput, speakText } from './services/geminiService';
 import { cn } from './lib/utils';
 import { 
   Mic, Camera, MessageCircle, Plus, Minus, Users, 
   CheckCircle2, AlertCircle, LogOut, User, 
-  TrendingUp, TrendingDown, Wallet, X, Send, Loader2, Phone, Key, ArrowRight, RefreshCw
+  TrendingUp, TrendingDown, Wallet, X, Send, Loader2, Phone, Key, ArrowRight, RefreshCw,
+  Play, Edit2, RotateCcw, Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
@@ -101,17 +103,40 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [isPinVerified, setIsPinVerified] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [language, setLanguage] = useState<string>('English');
+  const [showWhatsApp, setShowWhatsApp] = useState(false);
+  const [whatsAppMessages, setWhatsAppMessages] = useState<{sender: 'user' | 'system', text: string}[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [voiceText, setVoiceText] = useState('');
+  const [pendingVoiceText, setPendingVoiceText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [showVoiceConfirm, setShowVoiceConfirm] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [showAkosua, setShowAkosua] = useState(false);
   const [akosuaMessage, setAkosuaMessage] = useState('');
   const [isAkosuaLoading, setIsAkosuaLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'debts' | 'history'>('home');
   const [showAddModal, setShowAddModal] = useState<'income' | 'expense' | 'debt' | null>(null);
   const [formData, setFormData] = useState({ amount: '', item: '', name: '' });
+
+  // Admin State
+  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [showAdminDashboard, setShowAdminDashboard] = useState(false);
+  const [adminTab, setAdminTab] = useState<'analytics' | 'users' | 'transactions' | 'debts' | 'supabase'>('analytics');
+  const [supabaseStatus, setSupabaseStatus] = useState<{ success: boolean; error?: string } | null>(null);
+  const [adminSearch, setAdminSearch] = useState('');
+  const [adminFilter, setAdminFilter] = useState<'all' | 'income' | 'expense'>('all');
+  const [adminDateFilter, setAdminDateFilter] = useState('');
+  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [allTransactions, setAllTransactions] = useState<any[]>([]);
+  const [allDebts, setAllDebts] = useState<any[]>([]);
+  const [akosuaTapCount, setAkosuaTapCount] = useState(0);
+  const [isAdminLogin, setIsAdminLogin] = useState(false);
+  const [adminPin, setAdminPin] = useState('');
 
   // Auth State
   const [authState, setAuthState] = useState<'phone' | 'otp' | 'pin-setup' | 'pin-confirm' | 'pin-login'>('phone');
@@ -126,6 +151,11 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
+    const checkConnection = async () => {
+      const status = await testSupabaseConnection();
+      setSupabaseStatus(status);
+    };
+    checkConnection();
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
         const docRef = doc(db, 'users', u.uid);
@@ -155,32 +185,85 @@ export default function App() {
 
   // Data Listeners
   useEffect(() => {
+    if (isDemoMode) {
+      // Preload Demo Data
+      const mockTransactions: Transaction[] = [
+        { id: 'demo1', uid: 'demo', type: 'income', amount: 120, item: 'Tomato Sale', createdAt: { toDate: () => new Date() } as any },
+        { id: 'demo2', uid: 'demo', type: 'expense', amount: 75, item: 'Transport', createdAt: { toDate: () => new Date() } as any },
+      ];
+      const mockDebts: Debt[] = [
+        { id: 'debt1', uid: 'demo', name: 'Adjoa', amount: 20, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'debt2', uid: 'demo', name: 'Ama', amount: 15, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      setTransactions(mockTransactions);
+      setDebts(mockDebts);
+      return;
+    }
+
     if (!user || !isPinVerified) return;
 
-    const qTransactions = query(
-      collection(db, 'transactions'),
-      where('uid', '==', user.uid),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-    const unsubTransactions = onSnapshot(qTransactions, (snapshot) => {
-      setTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction)));
-    }, (err) => console.error("Firestore Error (Transactions):", err));
+    // Fetch from Supabase
+    const fetchSupabaseData = async () => {
+      try {
+        const { data: txData, error: txError } = await supabase
+          .from('transactions')
+          .select('*')
+          .order('created_at', { ascending: false });
+        
+        if (txError) {
+          console.error("Supabase Transactions Fetch Error:", txError);
+          throw txError;
+        }
+        if (txData) {
+          setTransactions(txData.map(t => ({
+            ...t,
+            createdAt: { toDate: () => new Date(t.created_at) }
+          } as Transaction)));
+        }
 
-    const qDebts = query(
-      collection(db, 'debts'),
-      where('uid', '==', user.uid),
-      orderBy('createdAt', 'desc')
-    );
-    const unsubDebts = onSnapshot(qDebts, (snapshot) => {
-      setDebts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Debt)));
-    }, (err) => console.error("Firestore Error (Debts):", err));
+        const { data: debtData, error: debtError } = await supabase
+          .from('debts')
+          .select('*')
+          .order('created_at', { ascending: false });
+        
+        if (debtError) {
+          console.error("Supabase Debts Fetch Error:", debtError);
+          throw debtError;
+        }
+        if (debtData) {
+          setDebts(debtData.map(d => ({
+            ...d,
+            createdAt: new Date(d.created_at),
+            updatedAt: new Date(d.updated_at || d.created_at)
+          } as Debt)));
+        }
+      } catch (err) {
+        console.error("Supabase Fetch Error (General):", err);
+      }
+    };
+
+    fetchSupabaseData();
+
+    // Set up real-time subscriptions
+    const txSubscription = supabase
+      .channel('transactions-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+        fetchSupabaseData();
+      })
+      .subscribe();
+
+    const debtSubscription = supabase
+      .channel('debts-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'debts' }, () => {
+        fetchSupabaseData();
+      })
+      .subscribe();
 
     return () => {
-      unsubTransactions();
-      unsubDebts();
+      supabase.removeChannel(txSubscription);
+      supabase.removeChannel(debtSubscription);
     };
-  }, [user, isPinVerified]);
+  }, [user, isPinVerified, isDemoMode]);
 
   // Calculations
   const today = new Date().setHours(0, 0, 0, 0);
@@ -202,7 +285,7 @@ export default function App() {
 
     // Demo Mode
     if (phoneNumber === '0240000000') {
-      setAuthState('otp');
+      setAuthState('pin-login');
       setIsAuthLoading(false);
       return;
     }
@@ -262,6 +345,25 @@ export default function App() {
     setIsAuthLoading(true);
     try {
       const hashed = await hashPin(pin);
+      
+      // Save to Supabase
+      const { error: supabaseError } = await supabase
+        .from('users')
+        .upsert([
+          { 
+            uid: user.uid, 
+            phone_number: user.phoneNumber, 
+            is_setup_complete: true,
+            created_at: new Date().toISOString()
+          }
+        ]);
+
+      if (supabaseError) {
+        console.error("Supabase Users Upsert Error:", supabaseError);
+        throw supabaseError;
+      }
+
+      // Save to Firestore
       await setDoc(doc(db, 'users', user.uid), {
         uid: user.uid,
         phoneNumber: user.phoneNumber,
@@ -282,7 +384,10 @@ export default function App() {
     
     // Demo Mode check
     if (phoneNumber === '0240000000' && pin === '1234') {
+      setIsDemoMode(true);
+      setUser({ uid: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
       setIsPinVerified(true);
+      resetDemo();
       return;
     }
 
@@ -298,22 +403,162 @@ export default function App() {
   const handleLogout = () => {
     signOut(auth);
     setIsPinVerified(false);
+    setIsDemoMode(false);
+    setIsAdminMode(false);
+    setShowAdminDashboard(false);
     setPin('');
     setPhoneNumber('');
     setOtp('');
   };
 
+  const handleEnterDemoMode = () => {
+    setIsDemoMode(true);
+    setUser({ uid: 'demo', phoneNumber: '0240000000', displayName: 'Demo User' });
+    setIsPinVerified(true);
+    resetDemo();
+  };
+
+  const resetDemo = () => {
+    const mockTransactions: Transaction[] = [
+      { id: 'demo1', uid: 'demo', type: 'income', amount: 120, item: 'Tomato Sale', createdAt: { toDate: () => new Date() } as any },
+      { id: 'demo2', uid: 'demo', type: 'expense', amount: 75, item: 'Transport', createdAt: { toDate: () => new Date() } as any },
+    ];
+    const mockDebts: Debt[] = [
+      { id: 'debt1', uid: 'demo', name: 'Adjoa', amount: 20, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'debt2', uid: 'demo', name: 'Ama', amount: 15, paidAmount: 0, status: 'unpaid', createdAt: new Date(), updatedAt: new Date() },
+    ];
+    setTransactions(mockTransactions);
+    setDebts(mockDebts);
+    setWhatsAppMessages([]);
+    setAkosuaMessage("Demo Reset! How can I help you today?");
+  };
+
+  useEffect(() => {
+    if (!isAdminMode || !showAdminDashboard) return;
+
+    // Real-time listeners for Admin
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      setAllUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubTxs = onSnapshot(query(collection(db, 'transactions'), orderBy('createdAt', 'desc')), (snapshot) => {
+      setAllTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), created_at: doc.data().createdAt?.toDate?.()?.toISOString() || new Date().toISOString() })));
+    });
+
+    const unsubDebts = onSnapshot(query(collection(db, 'debts'), orderBy('createdAt', 'desc')), (snapshot) => {
+      setAllDebts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), created_at: doc.data().createdAt?.toDate?.()?.toISOString() || new Date().toISOString() })));
+    });
+
+    return () => {
+      unsubUsers();
+      unsubTxs();
+      unsubDebts();
+    };
+  }, [isAdminMode, showAdminDashboard]);
+
+  const fetchAdminData = async () => {
+    // This is now handled by onSnapshot, but keeping it for manual refresh if needed
+    try {
+      const { data: users, error: userError } = await supabase.from('users').select('*');
+      if (userError) console.error("Admin Users Fetch Error:", userError);
+      
+      const { data: txs, error: txError } = await supabase.from('transactions').select('*').order('created_at', { ascending: false });
+      if (txError) console.error("Admin Transactions Fetch Error:", txError);
+      
+      const { data: debts, error: debtError } = await supabase.from('debts').select('*').order('created_at', { ascending: false });
+      if (debtError) console.error("Admin Debts Fetch Error:", debtError);
+      
+      setAllUsers(users || []);
+      setAllTransactions(txs || []);
+      setAllDebts(debts || []);
+    } catch (err) {
+      console.error("Admin Fetch Error (General):", err);
+    }
+  };
+
+  const handleAdminLogin = () => {
+    if (phoneNumber === '0240000000' && adminPin === '1234') {
+      setIsAdminMode(true);
+      setShowAdminDashboard(true);
+      setIsAdminLogin(false);
+      fetchAdminData();
+    } else {
+      setAuthError("Invalid Admin Credentials");
+    }
+  };
+
+  const deleteTransaction = async (id: string) => {
+    if (!isAdminMode) return;
+    try {
+      // Delete from Supabase
+      const { error } = await supabase.from('transactions').delete().eq('id', id);
+      if (error) {
+        console.error("Supabase Delete Error:", error);
+        throw error;
+      }
+      // Delete from Firestore
+      await deleteDoc(doc(db, 'transactions', id));
+      // No need to call fetchAdminData because onSnapshot will handle it
+    } catch (err) {
+      console.error("Delete failed", err);
+    }
+  };
+
   // --- App Handlers ---
 
   const saveTransaction = async (data: Partial<Transaction>) => {
+    if (isDemoMode) {
+      const newTx: Transaction = {
+        id: 'demo-' + Date.now(),
+        uid: 'demo',
+        createdAt: { toDate: () => new Date() } as any,
+        type: data.type || 'income',
+        amount: data.amount || 0,
+        item: data.item || '',
+        ...data
+      };
+      setTransactions([newTx, ...transactions]);
+      setShowAddModal(null);
+      setFormData({ amount: '', item: '', name: '' });
+      
+      // Trigger Akosua Guard
+      if (data.type === 'expense' && (todayExpense + (data.amount || 0)) > todayIncome) {
+        setAkosuaMessage("⚠️ Careful! You are spending more than you earned today.");
+        setShowAkosua(true);
+      }
+      return;
+    }
     if (!user) return;
     try {
+      // Save to Supabase
+      const { error } = await supabase
+        .from('transactions')
+        .insert([
+          { 
+            uid: user.uid, 
+            type: data.type, 
+            amount: data.amount, 
+            item: data.item,
+            category: data.category || 'business',
+            quantity: data.quantity,
+            unit: data.unit,
+            image_url: data.imageUrl
+          }
+        ]);
+
+      if (error) {
+        console.error("Supabase Insert Error:", error);
+        throw error;
+      }
+
+      // Also save to Firestore for backup/sync (optional, but keeping it for now)
       const newDoc = doc(collection(db, 'transactions'));
       await setDoc(newDoc, {
         uid: user.uid,
         createdAt: new Date(),
         ...data
       });
+
       setShowAddModal(null);
       setFormData({ amount: '', item: '', name: '' });
     } catch (err) {
@@ -322,8 +567,44 @@ export default function App() {
   };
 
   const saveDebt = async (data: Partial<Debt>) => {
+    if (isDemoMode) {
+      const newDebt: Debt = {
+        id: 'debt-' + Date.now(),
+        uid: 'demo',
+        paidAmount: 0,
+        status: 'unpaid',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        name: data.name || '',
+        amount: data.amount || 0,
+        ...data
+      };
+      setDebts([newDebt, ...debts]);
+      setShowAddModal(null);
+      setFormData({ amount: '', item: '', name: '' });
+      return;
+    }
     if (!user) return;
     try {
+      // Save to Supabase
+      const { error } = await supabase
+        .from('debts')
+        .insert([
+          { 
+            uid: user.uid, 
+            name: data.name, 
+            amount: data.amount, 
+            status: 'unpaid',
+            paid_amount: 0
+          }
+        ]);
+
+      if (error) {
+        console.error("Supabase Debt Insert Error:", error);
+        throw error;
+      }
+
+      // Also save to Firestore
       const newDoc = doc(collection(db, 'debts'));
       await setDoc(newDoc, {
         uid: user.uid,
@@ -333,6 +614,7 @@ export default function App() {
         updatedAt: new Date(),
         ...data
       });
+
       setShowAddModal(null);
       setFormData({ amount: '', item: '', name: '' });
     } catch (err) {
@@ -343,11 +625,28 @@ export default function App() {
   const markDebtAsPaid = async (debt: Debt) => {
     if (!debt.id) return;
     try {
+      // Update Supabase
+      const { error: supabaseError } = await supabase
+        .from('debts')
+        .update({ 
+          status: 'paid', 
+          paid_amount: debt.amount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', debt.id);
+
+      if (supabaseError) {
+        console.error("Supabase Debt Update Error:", supabaseError);
+        throw supabaseError;
+      }
+
+      // Update Firestore
       await updateDoc(doc(db, 'debts', debt.id), {
         status: 'paid',
         paidAmount: debt.amount,
         updatedAt: new Date()
       });
+
       await saveTransaction({
         type: 'income',
         amount: debt.amount,
@@ -367,22 +666,58 @@ export default function App() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.onstart = () => setIsListening(true);
-    recognition.onresult = (event: any) => {
-      const text = event.results[0][0].transcript;
-      setVoiceText(text);
-      handleVoiceCommand(text);
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceText('');
+      setPendingVoiceText('');
     };
+
+    recognition.onresult = async (event: any) => {
+      const text = event.results[0][0].transcript;
+      const confidence = event.results[0][0].confidence;
+      
+      if (confidence < 0.5) {
+        setVoiceText("I didn't hear well. Please speak closer.");
+        await speakText("I didn't hear well. Please speak closer.");
+        return;
+      }
+
+      setIsCleaning(true);
+      const cleaned = await cleanSpeechInput(text);
+      setIsCleaning(false);
+
+      if (cleaned === "noise") {
+        setVoiceText("I can't hear clearly. Please speak closer.");
+        await speakText("I can't hear clearly. Please speak closer.");
+      } else {
+        setPendingVoiceText(cleaned);
+        setShowVoiceConfirm(true);
+      }
+    };
+
     recognition.onend = () => setIsListening(false);
+    recognition.onerror = (event: any) => {
+      console.error("STT Error:", event.error);
+      setIsListening(false);
+      setVoiceText("Something went wrong. Try again.");
+    };
+
     recognition.start();
   };
 
-  const handleVoiceCommand = async (text: string) => {
+  const confirmVoiceInput = async () => {
+    setShowVoiceConfirm(false);
     setIsParsing(true);
-    const parsed = await parseTransaction(text);
+    const parsed = await parseTransaction(pendingVoiceText);
     setIsParsing(false);
 
     if (parsed) {
+      const lang = parsed.language || 'English';
+      setLanguage(lang);
+      
       if (parsed.isDebt && parsed.debtorName) {
         await saveDebt({ name: parsed.debtorName, amount: parsed.amount });
       } else {
@@ -395,24 +730,60 @@ export default function App() {
           category: parsed.category || 'business'
         });
       }
-      setVoiceText(`Saved: ${parsed.amount} GHS ${parsed.item || ''}`);
-      setTimeout(() => setVoiceText(''), 3000);
+      
+      const msg = parsed.response || (lang === 'Twi' ? `Woatɔn GHS ${parsed.amount}.` : `Recorded. ${parsed.type === 'income' ? 'Sale' : 'Expense'} of GHS ${parsed.amount}.`);
+      setVoiceText(msg);
+      await speakText(msg);
+      
+      setTimeout(() => setVoiceText(''), 5000);
     } else {
-      setVoiceText("I didn't hear well. Try again.");
+      const fallbackMsg = language === 'Twi' ? "Mante aseɛ yie. San ka bio." : "I couldn't understand that. Try again.";
+      setVoiceText(fallbackMsg);
+      await speakText(fallbackMsg);
     }
   };
 
   const handleAkosuaAdvice = async () => {
+    // Hidden Admin Entry: 5 taps
+    setAkosuaTapCount(prev => {
+      const newCount = prev + 1;
+      if (newCount >= 5) {
+        setIsAdminLogin(true);
+        return 0;
+      }
+      return newCount;
+    });
+
     setShowAkosua(true);
     setIsAkosuaLoading(true);
-    const advice = await getAkosuaAdvice(todayTransactions, debts.filter(d => d.status !== 'paid'));
+    if (isDemoMode) {
+      setTimeout(() => {
+        setAkosuaMessage("You are doing well! Your profit is GHS " + todayProfit + ". Remember to collect GHS " + debts.reduce((a,b) => a + (b.status !== 'paid' ? b.amount : 0), 0) + " from your customers.");
+        setIsAkosuaLoading(false);
+      }, 500);
+      return;
+    }
+    const advice = await getAkosuaAdvice(todayTransactions, debts.filter(d => d.status !== 'paid'), language);
     setAkosuaMessage(advice);
     setIsAkosuaLoading(false);
+    // Speak advice
+    await speakText(advice.replace(/[#*]/g, '')); // Clean markdown for TTS
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
+
+    if (isDemoMode) {
+      saveTransaction({ 
+        type: 'expense', 
+        amount: 0, 
+        item: 'Photo Upload (Demo)', 
+        imageUrl: 'https://picsum.photos/seed/receipt/400/600' 
+      });
+      alert("Photo saved (Demo Mode)!");
+      return;
+    }
 
     try {
       const storageRef = ref(storage, `transactions/${user.uid}/${Date.now()}_${file.name}`);
@@ -445,7 +816,7 @@ export default function App() {
       <div className="min-h-screen bg-orange-50 flex flex-col items-center justify-center p-6 text-center">
         <div id="recaptcha-container"></div>
         
-        <div className="w-20 h-20 bg-orange-500 rounded-3xl flex items-center justify-center mb-8 shadow-xl rotate-3">
+        <div className="w-20 h-20 bg-orange-500 rounded-3xl flex items-center justify-center mb-8 shadow-xl rotate-3 cursor-pointer" onContextMenu={(e) => { e.preventDefault(); setIsAdminLogin(true); }}>
           <Wallet className="text-white" size={40} />
         </div>
 
@@ -481,6 +852,16 @@ export default function App() {
                 <Button type="submit" size="lg" className="w-full" disabled={isAuthLoading}>
                   {isAuthLoading ? <Loader2 className="animate-spin" /> : 'Next'}
                 </Button>
+                
+                <div className="pt-4 border-t border-gray-100">
+                  <button 
+                    type="button"
+                    onClick={handleEnterDemoMode}
+                    className="w-full py-4 text-orange-500 font-black text-lg hover:bg-orange-50 rounded-2xl transition-colors"
+                  >
+                    🚀 Enter Demo Mode
+                  </button>
+                </div>
               </motion.form>
             )}
 
@@ -629,9 +1010,34 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 pb-32">
       {/* Header / Profit Display */}
-      <header className="bg-orange-500 text-white p-8 rounded-b-[3rem] shadow-xl">
-        <div className="flex justify-between items-center mb-8">
-          <div className="flex items-center gap-2">
+      <header className="bg-orange-500 text-white p-8 rounded-b-[3rem] shadow-xl relative">
+        {isDemoMode && (
+          <div className="absolute top-0 left-0 right-0 bg-yellow-400 text-black text-[10px] font-black py-1 px-4 flex justify-between items-center">
+            <span>DEMO MODE ACTIVE</span>
+            <div className="flex gap-2">
+              <button onClick={resetDemo} className="underline">Reset Demo</button>
+              <select 
+                value={language} 
+                onChange={(e) => setLanguage(e.target.value as any)}
+                className="bg-transparent border-none font-bold outline-none"
+              >
+                <option value="en">English</option>
+                <option value="twi">Twi</option>
+                <option value="ga">Ga</option>
+                <option value="ewe">Ewe</option>
+                <option value="hausa">Hausa</option>
+              </select>
+            </div>
+          </div>
+        )}
+        <div className="flex justify-between items-center mb-8 mt-4">
+          <div 
+            className="flex items-center gap-2 cursor-pointer"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setIsAdminLogin(true);
+            }}
+          >
             <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
               <User size={20} />
             </div>
@@ -727,9 +1133,19 @@ export default function App() {
                         </p>
                       </div>
                     </div>
-                    <p className={cn('text-lg font-black', t.type === 'income' ? 'text-green-600' : 'text-red-600')}>
-                      {t.type === 'income' ? '+' : '-'} GHS {t.amount.toFixed(2)}
-                    </p>
+                    <div className="flex flex-col items-end gap-1">
+                      <p className={cn('text-lg font-black', t.type === 'income' ? 'text-green-600' : 'text-red-600')}>
+                        {t.type === 'income' ? '+' : '-'} GHS {t.amount.toFixed(2)}
+                      </p>
+                      {isDemoMode && (
+                        <button 
+                          onClick={() => alert("Receipt generated! (Mock PDF View)")}
+                          className="text-[10px] bg-gray-100 px-2 py-1 rounded-md font-bold text-gray-500"
+                        >
+                          View Receipt
+                        </button>
+                      )}
+                    </div>
                   </Card>
                 ))
               )}
@@ -790,16 +1206,17 @@ export default function App() {
 
           <button 
             onClick={handleAkosuaAdvice}
-            className="flex-1 bg-blue-500 text-white p-6 rounded-3xl flex items-center justify-center shadow-lg active:scale-95 transition-all"
+            className="flex-1 bg-blue-500 text-white p-4 rounded-3xl flex flex-col items-center justify-center shadow-lg active:scale-95 transition-all"
           >
-            <MessageCircle size={32} />
+            <MessageCircle size={24} />
+            <span className="text-[10px] font-black mt-1">AKOSUA</span>
           </button>
         </div>
       </div>
 
       {/* Voice Feedback Overlay */}
       <AnimatePresence>
-        {(isListening || voiceText || isParsing) && (
+        {(isListening || voiceText || isCleaning || isParsing) && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -807,20 +1224,367 @@ export default function App() {
             className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-8 text-center"
           >
             <div className="bg-white rounded-[3rem] p-12 w-full max-w-xs shadow-2xl">
-              {isParsing ? (
+              {(isCleaning || isParsing) ? (
                 <Loader2 className="animate-spin text-orange-500 mx-auto mb-6" size={64} />
               ) : (
                 <Mic className={cn('mx-auto mb-6', isListening ? 'text-red-500 animate-pulse' : 'text-orange-500')} size={64} />
               )}
               <h3 className="text-2xl font-black mb-4">
-                {isParsing ? 'Saving...' : isListening ? 'Listening...' : 'Done!'}
+                {isParsing ? 'Saving...' : isCleaning ? 'Cleaning...' : isListening ? 'Listening...' : 'Done!'}
               </h3>
               <p className="text-gray-600 italic text-lg">
-                {voiceText || 'Say something like "I sold tomato for 50"'}
+                {voiceText || 'Speak clearly...'}
               </p>
-              {!isListening && !isParsing && (
+              {isDemoMode && isListening && (
+                <div className="mt-6 grid grid-cols-1 gap-2">
+                  <button 
+                    onClick={() => {
+                      setPendingVoiceText("I sold tomato for 50");
+                      setShowVoiceConfirm(true);
+                      setIsListening(false);
+                    }}
+                    className="bg-orange-50 p-3 rounded-xl text-orange-600 font-bold text-sm border border-orange-200"
+                  >
+                    "I sold tomato for 50"
+                  </button>
+                </div>
+              )}
+              {!isListening && !isCleaning && !isParsing && (
                 <Button onClick={() => setVoiceText('')} className="mt-8 w-full">Close</Button>
               )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Voice Confirmation Modal */}
+      <AnimatePresence>
+        {showVoiceConfirm && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-6"
+          >
+            <div className="bg-white w-full max-w-sm rounded-[3rem] p-8 shadow-2xl space-y-6">
+              <div className="text-center">
+                <h3 className="text-2xl font-black mb-2">You said:</h3>
+                {isEditing ? (
+                  <textarea 
+                    value={pendingVoiceText}
+                    onChange={(e) => setPendingVoiceText(e.target.value)}
+                    className="w-full bg-gray-100 rounded-2xl p-4 text-xl font-bold focus:outline-none h-32"
+                  />
+                ) : (
+                  <p className="text-2xl font-bold text-orange-600 italic">"{pendingVoiceText}"</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Button onClick={() => speakText(pendingVoiceText)} variant="ghost" icon={Play} className="text-sm">
+                  Play Back
+                </Button>
+                <Button onClick={() => setIsEditing(!isEditing)} variant="ghost" icon={Edit2} className="text-sm">
+                  {isEditing ? 'Done' : 'Edit'}
+                </Button>
+                <Button onClick={() => { setShowVoiceConfirm(false); startListening(); }} variant="danger" icon={RotateCcw} className="text-sm">
+                  Try Again
+                </Button>
+                <Button onClick={confirmVoiceInput} variant="accent" icon={Check} className="text-sm">
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Admin Dashboard Modal */}
+      <AnimatePresence>
+        {showAdminDashboard && (
+          <motion.div 
+            initial={{ opacity: 0, x: '100%' }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: '100%' }}
+            className="fixed inset-0 bg-white z-[100] flex flex-col"
+          >
+            <div className="bg-gray-900 text-white p-6 flex justify-between items-center">
+              <div>
+                <h3 className="font-black text-2xl">ADMIN PANEL</h3>
+                <p className="text-xs text-gray-400">System Monitoring & Control</p>
+              </div>
+              <button onClick={() => setShowAdminDashboard(false)} className="p-2 bg-white/10 rounded-full">
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="flex bg-gray-100 p-2 gap-2 overflow-x-auto">
+              {(['analytics', 'users', 'transactions', 'debts', 'supabase'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setAdminTab(tab)}
+                  className={cn(
+                    'px-6 py-3 rounded-xl text-sm font-bold capitalize whitespace-nowrap transition-all',
+                    adminTab === tab ? 'bg-orange-500 text-white shadow-md' : 'text-gray-500'
+                  )}
+                >
+                  {tab === 'supabase' ? (supabaseStatus?.success ? 'Supabase ✅' : 'Supabase ❌') : tab}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-8">
+              {adminTab === 'supabase' && (
+                <div className="p-6 space-y-6 overflow-y-auto flex-1">
+                  <div className={cn(
+                    "p-4 rounded-xl border",
+                    supabaseStatus?.success ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"
+                  )}>
+                    <h4 className="font-bold">Connection Status</h4>
+                    <p className="text-sm">{supabaseStatus?.success ? "Connected successfully!" : `Error: ${supabaseStatus?.error}`}</p>
+                  </div>
+
+                  {!supabaseStatus?.success && (
+                    <div className="space-y-4">
+                      <h4 className="font-black text-xl">Required SQL Schema</h4>
+                      <p className="text-sm text-gray-600">Run this SQL in your Supabase SQL Editor to create the missing tables:</p>
+                      <pre className="bg-gray-900 text-gray-100 p-4 rounded-xl text-xs overflow-x-auto font-mono">
+{`CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS public.users (
+    uid TEXT PRIMARY KEY,
+    phone_number TEXT,
+    is_setup_complete BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    uid TEXT REFERENCES public.users(uid) ON DELETE CASCADE,
+    type TEXT CHECK (type IN ('income', 'expense')),
+    amount NUMERIC NOT NULL DEFAULT 0,
+    item TEXT,
+    category TEXT DEFAULT 'business',
+    quantity NUMERIC,
+    unit TEXT,
+    image_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.debts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    uid TEXT REFERENCES public.users(uid) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    paid_amount NUMERIC DEFAULT 0,
+    status TEXT CHECK (status IN ('unpaid', 'paid')) DEFAULT 'unpaid',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.debts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all on users" ON public.users FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on transactions" ON public.transactions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on debts" ON public.debts FOR ALL USING (true) WITH CHECK (true);`}
+                      </pre>
+                      <Button 
+                        onClick={async () => {
+                          const status = await testSupabaseConnection();
+                          setSupabaseStatus(status);
+                        }} 
+                        variant="accent" 
+                        className="w-full"
+                      >
+                        Re-test Connection
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {adminTab === 'analytics' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <Card className="bg-blue-50 border-blue-100">
+                      <p className="text-xs font-bold text-blue-500 uppercase mb-1">Total Users</p>
+                      <h4 className="text-3xl font-black">{allUsers.length}</h4>
+                    </Card>
+                    <Card className="bg-green-50 border-green-100">
+                      <p className="text-xs font-bold text-green-500 uppercase mb-1">Total Income</p>
+                      <h4 className="text-3xl font-black">GHS {allTransactions.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0).toFixed(0)}</h4>
+                    </Card>
+                    <Card className="bg-red-50 border-red-100">
+                      <p className="text-xs font-bold text-red-500 uppercase mb-1">Total Expenses</p>
+                      <h4 className="text-3xl font-black">GHS {allTransactions.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0).toFixed(0)}</h4>
+                    </Card>
+                    <Card className="bg-orange-50 border-orange-100">
+                      <p className="text-xs font-bold text-orange-500 uppercase mb-1">Total Debts</p>
+                      <h4 className="text-3xl font-black">GHS {allDebts.reduce((s, d) => s + d.amount, 0).toFixed(0)}</h4>
+                    </Card>
+                    <Card className="bg-purple-50 border-purple-100">
+                      <p className="text-xs font-bold text-purple-500 uppercase mb-1">Avg Transaction</p>
+                      <h4 className="text-3xl font-black">GHS {(allTransactions.reduce((s, t) => s + t.amount, 0) / (allTransactions.length || 1)).toFixed(0)}</h4>
+                    </Card>
+                    <Card className="bg-yellow-50 border-yellow-100">
+                      <p className="text-xs font-bold text-yellow-500 uppercase mb-1">Active Today</p>
+                      <h4 className="text-3xl font-black">{new Set(allTransactions.filter(t => new Date(t.created_at).toDateString() === new Date().toDateString()).map(t => t.uid)).size}</h4>
+                    </Card>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <h4 className="font-black text-xl">System Actions</h4>
+                    <Button onClick={resetDemo} variant="danger" className="w-full">Reset Demo Data</Button>
+                    <Button onClick={fetchAdminData} variant="ghost" className="w-full" icon={RefreshCw}>Refresh Data</Button>
+                  </div>
+                </div>
+              )}
+
+              {adminTab === 'users' && (
+                <div className="space-y-4">
+                  <input 
+                    type="text" 
+                    placeholder="Search by phone..." 
+                    className="w-full bg-gray-100 rounded-2xl px-6 py-4 font-bold outline-none"
+                    value={adminSearch}
+                    onChange={(e) => setAdminSearch(e.target.value)}
+                  />
+                  {allUsers.filter(u => (u.phone_number || u.phoneNumber)?.includes(adminSearch)).map((u, i) => (
+                    <Card key={i} className="flex justify-between items-center">
+                      <div>
+                        <p className="font-black text-lg">{u.phone_number || u.phoneNumber || 'Unknown'}</p>
+                        <p className="text-xs text-gray-500">Joined: {new Date(u.created_at || Date.now()).toLocaleDateString()}</p>
+                      </div>
+                      <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
+                        <User size={20} className="text-gray-400" />
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+
+              {adminTab === 'transactions' && (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-4">
+                    <div className="flex gap-2 overflow-x-auto pb-2">
+                      {(['all', 'income', 'expense'] as const).map(f => (
+                        <button 
+                          key={f}
+                          onClick={() => setAdminFilter(f)}
+                          className={cn(
+                            'px-4 py-2 rounded-full text-xs font-bold capitalize whitespace-nowrap',
+                            adminFilter === f ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'
+                          )}
+                        >
+                          {f}
+                        </button>
+                      ))}
+                    </div>
+                    <input 
+                      type="date" 
+                      className="w-full bg-gray-100 rounded-2xl px-6 py-4 font-bold outline-none"
+                      value={adminDateFilter}
+                      onChange={(e) => setAdminDateFilter(e.target.value)}
+                    />
+                  </div>
+                  {allTransactions
+                    .filter(t => adminFilter === 'all' || t.type === adminFilter)
+                    .filter(t => !adminDateFilter || new Date(t.created_at).toISOString().split('T')[0] === adminDateFilter)
+                    .map((t, i) => (
+                      <Card key={i} className="flex justify-between items-center">
+                        <div className="flex items-center gap-4">
+                          <div className={cn(
+                            'w-10 h-10 rounded-xl flex items-center justify-center',
+                            t.type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'
+                          )}>
+                            {t.type === 'income' ? <Plus size={18} /> : <Minus size={18} />}
+                          </div>
+                          <div>
+                            <p className="font-bold">{t.item || t.type}</p>
+                            <p className="text-[10px] text-gray-500">{new Date(t.created_at).toLocaleString()}</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className={cn('font-black', t.type === 'income' ? 'text-green-600' : 'text-red-600')}>
+                            GHS {t.amount}
+                          </p>
+                          <button onClick={() => deleteTransaction(t.id)} className="text-[10px] text-red-500 font-bold">Delete</button>
+                        </div>
+                      </Card>
+                    ))}
+                </div>
+              )}
+
+              {adminTab === 'debts' && (
+                <div className="space-y-4">
+                  {allDebts.map((d, i) => (
+                    <Card key={i} className="flex justify-between items-center">
+                      <div>
+                        <p className="font-black text-lg">{d.name}</p>
+                        <p className="text-xs text-gray-500">GHS {d.amount} • {d.status}</p>
+                      </div>
+                      {d.status !== 'paid' && (
+                        <Button onClick={() => markDebtAsPaid(d)} variant="accent" size="sm">Mark Paid</Button>
+                      )}
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Admin Login Modal */}
+      <AnimatePresence>
+        {isAdminLogin && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-[110] flex items-center justify-center p-6"
+          >
+            <div className="bg-white w-full max-w-sm rounded-[3rem] p-8 space-y-8 shadow-2xl">
+              <div className="text-center">
+                <div className="w-16 h-16 bg-gray-900 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <Key className="text-white" size={32} />
+                </div>
+                <h3 className="text-2xl font-black">Admin Access</h3>
+                <p className="text-gray-500 text-sm">Enter admin credentials to continue.</p>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase ml-2">Admin Phone</label>
+                  <input 
+                    type="tel" 
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    className="w-full bg-gray-100 rounded-2xl px-6 py-4 font-bold outline-none"
+                    placeholder="0240000000"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase ml-2">Admin PIN</label>
+                  <input 
+                    type="password" 
+                    maxLength={4}
+                    value={adminPin}
+                    onChange={(e) => setAdminPin(e.target.value)}
+                    className="w-full bg-gray-100 rounded-2xl px-6 py-4 font-bold outline-none text-center tracking-[1em]"
+                    placeholder="****"
+                  />
+                </div>
+              </div>
+
+              {authError && <p className="text-red-500 text-sm font-bold text-center">{authError}</p>}
+
+              <div className="grid grid-cols-2 gap-4">
+                <Button onClick={() => setIsAdminLogin(false)} variant="ghost">Cancel</Button>
+                <Button onClick={handleAdminLogin} variant="primary">Login</Button>
+              </div>
             </div>
           </motion.div>
         )}
@@ -881,7 +1645,81 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Add Transaction Modal */}
+      {/* WhatsApp Simulation Modal */}
+      <AnimatePresence>
+        {showWhatsApp && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-6"
+          >
+            <div className="bg-[#E5DDD5] w-full max-w-sm h-[80vh] rounded-[2rem] flex flex-col overflow-hidden shadow-2xl">
+              <div className="bg-[#075E54] text-white p-4 flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                  <User size={24} />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-bold">Customer (WhatsApp)</h3>
+                  <p className="text-[10px] opacity-70">Online</p>
+                </div>
+                <button onClick={() => setShowWhatsApp(false)}><X size={24} /></button>
+              </div>
+              
+              <div className="flex-1 p-4 overflow-y-auto space-y-3">
+                {whatsAppMessages.length === 0 && (
+                  <p className="text-center text-gray-500 text-sm italic mt-10">No messages yet.</p>
+                )}
+                {whatsAppMessages.map((m, i) => (
+                  <div key={i} className={cn(
+                    'max-w-[80%] p-3 rounded-xl text-sm shadow-sm',
+                    m.sender === 'user' ? 'bg-[#DCF8C6] ml-auto rounded-tr-none' : 'bg-white mr-auto rounded-tl-none'
+                  )}>
+                    {m.text}
+                  </div>
+                ))}
+              </div>
+
+              <div className="p-3 bg-[#F0F0F0] flex gap-2">
+                <input 
+                  type="text" 
+                  placeholder="Type a message..." 
+                  className="flex-1 bg-white rounded-full px-4 py-2 text-sm outline-none"
+                  onKeyPress={async (e) => {
+                    if (e.key === 'Enter') {
+                      const text = (e.target as HTMLInputElement).value;
+                      if (!text) return;
+                      setWhatsAppMessages(prev => [...prev, { sender: 'user', text }]);
+                      (e.target as HTMLInputElement).value = '';
+                      
+                      // Process WhatsApp message with language support
+                      const parsed = await parseTransaction(text);
+                      if (parsed) {
+                        setLanguage(parsed.language || 'English');
+                        if (parsed.isDebt && parsed.debtorName) {
+                          await saveDebt({ name: parsed.debtorName, amount: parsed.amount });
+                        } else {
+                          await saveTransaction({
+                            type: parsed.type,
+                            amount: parsed.amount,
+                            item: parsed.item,
+                            quantity: parsed.quantity,
+                            unit: parsed.unit
+                          });
+                        }
+                        setWhatsAppMessages(prev => [...prev, { sender: 'system', text: parsed.response || "Recorded!" }]);
+                      } else {
+                        setWhatsAppMessages(prev => [...prev, { sender: 'system', text: "I didn't understand that. Please try again." }]);
+                      }
+                    }
+                  }}
+                />
+                <button className="bg-[#128C7E] text-white p-2 rounded-full"><Send size={20} /></button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {showAddModal && (
           <motion.div 
