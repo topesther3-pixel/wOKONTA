@@ -9,10 +9,25 @@ import {
   collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy, limit,
   ref, uploadBytes, getDownloadURL, RecaptchaVerifier, signInWithPhoneNumber
 } from './firebase';
-import { supabase, testSupabaseConnection } from './lib/supabase';
+import { supabase, testSupabaseConnection } from './supabase';
+import { 
+  saveTransaction as apiSaveTransaction, 
+  saveDebt as apiSaveDebt, 
+  getTransactions, 
+  getDebts as apiGetDebts, 
+  getProfit,
+  saveUser as apiSaveUser,
+  deleteTransaction as apiDeleteTransaction,
+  updateDebt as apiUpdateDebt,
+  getUsers
+} from './api';
 import { Transaction, Debt, UserProfile, ParsedTransaction } from './types';
 import { parseTransaction, getAkosuaAdvice, cleanSpeechInput, speakText } from './services/geminiService';
 import { cn } from './lib/utils';
+import { Button } from './components/Button';
+import { Card } from './components/Card';
+import { PinInput } from './components/PinInput';
+import { setupSpeechRecognition } from './voice';
 import { 
   Mic, Camera, MessageCircle, Plus, Minus, Users, 
   CheckCircle2, AlertCircle, LogOut, User, 
@@ -30,71 +45,6 @@ async function hashPin(pin: string): Promise<string> {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
-
-// --- Components ---
-
-const Button = ({ 
-  children, onClick, className, variant = 'primary', size = 'md', disabled = false, icon: Icon, type = 'button'
-}: { 
-  children?: React.ReactNode, onClick?: () => void, className?: string, 
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'accent', 
-  size?: 'sm' | 'md' | 'lg' | 'xl', disabled?: boolean, icon?: any, type?: 'button' | 'submit'
-}) => {
-  const variants = {
-    primary: 'bg-orange-500 text-white hover:bg-orange-600',
-    secondary: 'bg-blue-500 text-white hover:bg-blue-600',
-    danger: 'bg-red-500 text-white hover:bg-red-600',
-    ghost: 'bg-gray-100 text-gray-700 hover:bg-gray-200',
-    accent: 'bg-green-500 text-white hover:bg-green-600',
-  };
-  const sizes = {
-    sm: 'p-2 text-sm',
-    md: 'p-4 text-base',
-    lg: 'p-6 text-xl font-bold',
-    xl: 'p-8 text-2xl font-bold',
-  };
-
-  return (
-    <button 
-      type={type}
-      onClick={onClick} 
-      disabled={disabled}
-      className={cn(
-        'rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50',
-        variants[variant],
-        sizes[size],
-        className
-      )}
-    >
-      {Icon && <Icon size={size === 'xl' ? 32 : 24} />}
-      {children}
-    </button>
-  );
-};
-
-const Card = ({ children, className }: { children: React.ReactNode, className?: string }) => (
-  <div className={cn('bg-white rounded-3xl p-6 shadow-sm border border-gray-100', className)}>
-    {children}
-  </div>
-);
-
-const PinInput = ({ value, onChange, length = 4 }: { value: string, onChange: (val: string) => void, length?: number }) => {
-  return (
-    <div className="flex justify-center gap-4">
-      {Array.from({ length }).map((_, i) => (
-        <div 
-          key={i}
-          className={cn(
-            'w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all',
-            value.length > i ? 'bg-orange-500 border-orange-500' : 'bg-gray-100 border-gray-200'
-          )}
-        >
-          {value.length > i && <div className="w-3 h-3 bg-white rounded-full" />}
-        </div>
-      ))}
-    </div>
-  );
-};
 
 // --- Main App ---
 
@@ -114,7 +64,6 @@ export default function App() {
   const [pendingVoiceText, setPendingVoiceText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isCleaning, setIsCleaning] = useState(false);
-  const [showVoiceConfirm, setShowVoiceConfirm] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [showAkosua, setShowAkosua] = useState(false);
   const [akosuaMessage, setAkosuaMessage] = useState('');
@@ -205,33 +154,17 @@ export default function App() {
     // Fetch from Supabase
     const fetchSupabaseData = async () => {
       try {
-        const { data: txData, error: txError } = await supabase
-          .from('transactions')
-          .select('*')
-          .order('created_at', { ascending: false });
-        
-        if (txError) {
-          console.error("Supabase Transactions Fetch Error:", txError);
-          throw txError;
-        }
+        const txData = await getTransactions();
         if (txData) {
-          setTransactions(txData.map(t => ({
+          setTransactions(txData.map((t: any) => ({
             ...t,
             createdAt: { toDate: () => new Date(t.created_at) }
           } as Transaction)));
         }
 
-        const { data: debtData, error: debtError } = await supabase
-          .from('debts')
-          .select('*')
-          .order('created_at', { ascending: false });
-        
-        if (debtError) {
-          console.error("Supabase Debts Fetch Error:", debtError);
-          throw debtError;
-        }
+        const debtData = await apiGetDebts();
         if (debtData) {
-          setDebts(debtData.map(d => ({
+          setDebts(debtData.map((d: any) => ({
             ...d,
             createdAt: new Date(d.created_at),
             updatedAt: new Date(d.updated_at || d.created_at)
@@ -347,22 +280,8 @@ export default function App() {
       const hashed = await hashPin(pin);
       
       // Save to Supabase
-      const { error: supabaseError } = await supabase
-        .from('users')
-        .upsert([
-          { 
-            uid: user.uid, 
-            phone_number: user.phoneNumber, 
-            is_setup_complete: true,
-            created_at: new Date().toISOString()
-          }
-        ]);
-
-      if (supabaseError) {
-        console.error("Supabase Users Upsert Error:", supabaseError);
-        throw supabaseError;
-      }
-
+      await apiSaveUser(user.uid, user.phoneNumber || '');
+      
       // Save to Firestore
       await setDoc(doc(db, 'users', user.uid), {
         uid: user.uid,
@@ -459,14 +378,9 @@ export default function App() {
   const fetchAdminData = async () => {
     // This is now handled by onSnapshot, but keeping it for manual refresh if needed
     try {
-      const { data: users, error: userError } = await supabase.from('users').select('*');
-      if (userError) console.error("Admin Users Fetch Error:", userError);
-      
-      const { data: txs, error: txError } = await supabase.from('transactions').select('*').order('created_at', { ascending: false });
-      if (txError) console.error("Admin Transactions Fetch Error:", txError);
-      
-      const { data: debts, error: debtError } = await supabase.from('debts').select('*').order('created_at', { ascending: false });
-      if (debtError) console.error("Admin Debts Fetch Error:", debtError);
+      const users = await getUsers();
+      const txs = await getTransactions();
+      const debts = await apiGetDebts();
       
       setAllUsers(users || []);
       setAllTransactions(txs || []);
@@ -491,11 +405,9 @@ export default function App() {
     if (!isAdminMode) return;
     try {
       // Delete from Supabase
-      const { error } = await supabase.from('transactions').delete().eq('id', id);
-      if (error) {
-        console.error("Supabase Delete Error:", error);
-        throw error;
-      }
+      const { success } = await apiDeleteTransaction(id);
+      if (!success) throw new Error("Failed to delete from Supabase");
+      
       // Delete from Firestore
       await deleteDoc(doc(db, 'transactions', id));
       // No need to call fetchAdminData because onSnapshot will handle it
@@ -507,113 +419,72 @@ export default function App() {
   // --- App Handlers ---
 
   const saveTransaction = async (data: Partial<Transaction>) => {
-    if (isDemoMode) {
-      const newTx: Transaction = {
-        id: 'demo-' + Date.now(),
-        uid: 'demo',
-        createdAt: { toDate: () => new Date() } as any,
-        type: data.type || 'income',
-        amount: data.amount || 0,
-        item: data.item || '',
-        ...data
-      };
-      setTransactions([newTx, ...transactions]);
+    const uid = isDemoMode ? 'demo' : user?.uid;
+    if (!uid) return;
+
+    try {
+      // Save to Supabase using API layer
+      const result = await apiSaveTransaction(
+        data.type as 'income' | 'expense', 
+        data.amount || 0, 
+        data.item || '', 
+        uid
+      );
+
+      if (!result.success) throw result.error;
+
+      // If in demo mode, we still update local state for immediate feedback if needed, 
+      // but the real-time listener should handle it anyway.
+      
+      // Also save to Firestore for backup/sync (optional)
+      if (!isDemoMode) {
+        const newDoc = doc(collection(db, 'transactions'));
+        await setDoc(newDoc, {
+          uid,
+          createdAt: new Date(),
+          ...data
+        });
+      }
+
       setShowAddModal(null);
       setFormData({ amount: '', item: '', name: '' });
-      
+
       // Trigger Akosua Guard
       if (data.type === 'expense' && (todayExpense + (data.amount || 0)) > todayIncome) {
         setAkosuaMessage("⚠️ Careful! You are spending more than you earned today.");
         setShowAkosua(true);
       }
-      return;
-    }
-    if (!user) return;
-    try {
-      // Save to Supabase
-      const { error } = await supabase
-        .from('transactions')
-        .insert([
-          { 
-            uid: user.uid, 
-            type: data.type, 
-            amount: data.amount, 
-            item: data.item,
-            category: data.category || 'business',
-            quantity: data.quantity,
-            unit: data.unit,
-            image_url: data.imageUrl
-          }
-        ]);
-
-      if (error) {
-        console.error("Supabase Insert Error:", error);
-        throw error;
-      }
-
-      // Also save to Firestore for backup/sync (optional, but keeping it for now)
-      const newDoc = doc(collection(db, 'transactions'));
-      await setDoc(newDoc, {
-        uid: user.uid,
-        createdAt: new Date(),
-        ...data
-      });
-
-      setShowAddModal(null);
-      setFormData({ amount: '', item: '', name: '' });
     } catch (err) {
       console.error("Save failed", err);
     }
   };
 
   const saveDebt = async (data: Partial<Debt>) => {
-    if (isDemoMode) {
-      const newDebt: Debt = {
-        id: 'debt-' + Date.now(),
-        uid: 'demo',
-        paidAmount: 0,
-        status: 'unpaid',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        name: data.name || '',
-        amount: data.amount || 0,
-        ...data
-      };
-      setDebts([newDebt, ...debts]);
-      setShowAddModal(null);
-      setFormData({ amount: '', item: '', name: '' });
-      return;
-    }
-    if (!user) return;
-    try {
-      // Save to Supabase
-      const { error } = await supabase
-        .from('debts')
-        .insert([
-          { 
-            uid: user.uid, 
-            name: data.name, 
-            amount: data.amount, 
-            status: 'unpaid',
-            paid_amount: 0
-          }
-        ]);
+    const uid = isDemoMode ? 'demo' : user?.uid;
+    if (!uid) return;
 
-      if (error) {
-        console.error("Supabase Debt Insert Error:", error);
-        throw error;
-      }
+    try {
+      // Save to Supabase using API layer
+      const result = await apiSaveDebt(
+        data.name || '', 
+        data.amount || 0, 
+        uid
+      );
+
+      if (!result.success) throw result.error;
 
       // Also save to Firestore
-      const newDoc = doc(collection(db, 'debts'));
-      await setDoc(newDoc, {
-        uid: user.uid,
-        paidAmount: 0,
-        status: 'unpaid',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        ...data
-      });
+      if (!isDemoMode) {
+        const newDoc = doc(collection(db, 'debts'));
+        await setDoc(newDoc, {
+          uid,
+          paidAmount: 0,
+          status: 'unpaid',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data
+        });
+      }
 
       setShowAddModal(null);
       setFormData({ amount: '', item: '', name: '' });
@@ -626,19 +497,12 @@ export default function App() {
     if (!debt.id) return;
     try {
       // Update Supabase
-      const { error: supabaseError } = await supabase
-        .from('debts')
-        .update({ 
-          status: 'paid', 
-          paid_amount: debt.amount,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', debt.id);
+      const { success } = await apiUpdateDebt(debt.id, { 
+        status: 'paid', 
+        paid_amount: debt.amount 
+      });
 
-      if (supabaseError) {
-        console.error("Supabase Debt Update Error:", supabaseError);
-        throw supabaseError;
-      }
+      if (!success) throw new Error("Failed to update debt in Supabase");
 
       // Update Firestore
       await updateDoc(doc(db, 'debts', debt.id), {
@@ -658,60 +522,47 @@ export default function App() {
   };
 
   const startListening = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Voice not supported on this browser.");
-      return;
+    setIsListening(true);
+    setVoiceText("Listening...");
+    setPendingVoiceText('');
+    
+    const recognition = setupSpeechRecognition(
+      async (text, confidence) => {
+        if (confidence < 0.5) {
+          setVoiceText("I didn't hear well. Please speak closer.");
+          await speakText("I didn't hear well. Please speak closer.");
+          return;
+        }
+
+        setIsCleaning(true);
+        const cleaned = await cleanSpeechInput(text);
+        setIsCleaning(false);
+
+        if (cleaned === "noise") {
+          setVoiceText("I can't hear clearly. Please speak closer.");
+          await speakText("I can't hear clearly. Please speak closer.");
+        } else {
+          setPendingVoiceText(cleaned);
+          // AUTOMATIC FLOW: Skip confirmation and save immediately
+          await autoProcessVoice(cleaned);
+        }
+      },
+      async (error) => {
+        console.error("STT Error:", error);
+        setIsListening(false);
+        setVoiceText("Something went wrong. Try again.");
+      },
+      () => setIsListening(false)
+    );
+
+    if (recognition) {
+      recognition.start();
     }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = false;
-
-    recognition.onstart = () => {
-      setIsListening(true);
-      setVoiceText('');
-      setPendingVoiceText('');
-    };
-
-    recognition.onresult = async (event: any) => {
-      const text = event.results[0][0].transcript;
-      const confidence = event.results[0][0].confidence;
-      
-      if (confidence < 0.5) {
-        setVoiceText("I didn't hear well. Please speak closer.");
-        await speakText("I didn't hear well. Please speak closer.");
-        return;
-      }
-
-      setIsCleaning(true);
-      const cleaned = await cleanSpeechInput(text);
-      setIsCleaning(false);
-
-      if (cleaned === "noise") {
-        setVoiceText("I can't hear clearly. Please speak closer.");
-        await speakText("I can't hear clearly. Please speak closer.");
-      } else {
-        setPendingVoiceText(cleaned);
-        setShowVoiceConfirm(true);
-      }
-    };
-
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = (event: any) => {
-      console.error("STT Error:", event.error);
-      setIsListening(false);
-      setVoiceText("Something went wrong. Try again.");
-    };
-
-    recognition.start();
   };
 
-  const confirmVoiceInput = async () => {
-    setShowVoiceConfirm(false);
+  const autoProcessVoice = async (text: string) => {
     setIsParsing(true);
-    const parsed = await parseTransaction(pendingVoiceText);
+    const parsed = await parseTransaction(text);
     setIsParsing(false);
 
     if (parsed) {
@@ -1240,7 +1091,7 @@ export default function App() {
                   <button 
                     onClick={() => {
                       setPendingVoiceText("I sold tomato for 50");
-                      setShowVoiceConfirm(true);
+                      autoProcessVoice("I sold tomato for 50");
                       setIsListening(false);
                     }}
                     className="bg-orange-50 p-3 rounded-xl text-orange-600 font-bold text-sm border border-orange-200"
@@ -1252,48 +1103,6 @@ export default function App() {
               {!isListening && !isCleaning && !isParsing && (
                 <Button onClick={() => setVoiceText('')} className="mt-8 w-full">Close</Button>
               )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Voice Confirmation Modal */}
-      <AnimatePresence>
-        {showVoiceConfirm && (
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[80] flex items-center justify-center p-6"
-          >
-            <div className="bg-white w-full max-w-sm rounded-[3rem] p-8 shadow-2xl space-y-6">
-              <div className="text-center">
-                <h3 className="text-2xl font-black mb-2">You said:</h3>
-                {isEditing ? (
-                  <textarea 
-                    value={pendingVoiceText}
-                    onChange={(e) => setPendingVoiceText(e.target.value)}
-                    className="w-full bg-gray-100 rounded-2xl p-4 text-xl font-bold focus:outline-none h-32"
-                  />
-                ) : (
-                  <p className="text-2xl font-bold text-orange-600 italic">"{pendingVoiceText}"</p>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <Button onClick={() => speakText(pendingVoiceText)} variant="ghost" icon={Play} className="text-sm">
-                  Play Back
-                </Button>
-                <Button onClick={() => setIsEditing(!isEditing)} variant="ghost" icon={Edit2} className="text-sm">
-                  {isEditing ? 'Done' : 'Edit'}
-                </Button>
-                <Button onClick={() => { setShowVoiceConfirm(false); startListening(); }} variant="danger" icon={RotateCcw} className="text-sm">
-                  Try Again
-                </Button>
-                <Button onClick={confirmVoiceInput} variant="accent" icon={Check} className="text-sm">
-                  Confirm
-                </Button>
-              </div>
             </div>
           </motion.div>
         )}
